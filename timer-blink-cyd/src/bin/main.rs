@@ -9,12 +9,17 @@
 
 
 use core::fmt::Write;
+use chrono::NaiveTime;
+use chrono::Timelike;
+use embedded_graphics::primitives::Circle;
 use embedded_graphics::primitives::{PrimitiveStyle, Rectangle};
+use esp_hal::rtc_cntl::Rtc;
 use heapless::String;
 
 use embedded_graphics::text::Text;
 use embedded_graphics::mono_font::MonoTextStyle;
-use embedded_graphics::mono_font::ascii::FONT_6X10;
+use embedded_graphics::mono_font::ascii::FONT_10X20;
+// use embedded_graphics::prelude::*;
 use esp_backtrace as _;
 use esp_hal::clock::CpuClock;
 use esp_hal::delay::Delay;
@@ -29,6 +34,7 @@ use esp_hal::spi::master::Config;
 use mipidsi::{Builder, models::ILI9341Rgb565, options::{Orientation, Rotation}};
 use embedded_graphics::{pixelcolor::Rgb565, prelude::*};
 use esp_hal::spi::master::Spi;
+use timer_blink_cyd::*;
 
 // This creates a default app-descriptor required by the esp-idf bootloader.
 // For more information see: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/app_image_format.html#application-description>
@@ -186,41 +192,75 @@ fn main() -> ! {
 
     let background = [Rgb565::GREEN, Rgb565::WHITE, Rgb565::RED, Rgb565::GREEN, Rgb565::BLUE];
 
-    // Draw text
-    let text_style = MonoTextStyle::new(&FONT_6X10, Rgb565::WHITE);
-    let text = Text::new("Hello World", Point::new(10, 10), text_style);
-    {
-        text.draw(&mut display).unwrap();
-    }
+    // // Draw text
+    // let text_style = MonoTextStyle::new(&FONT_10X20, Rgb565::WHITE);
+    // let text = Text::new("Hello World", Point::new(10, 10), text_style);
+    // {
+    //     text.draw(&mut display).unwrap();
+    // }
+
+    let rtc = Rtc::new(peripherals.LPWR);
     
 
 
-    let mut elapsed_ms: u32 = 0;
+    rtc.set_current_time_us(((8 * 60) + 5) * 60 * 1000 * 1000); // set to 08:05:00.000
+    let mut elapsed_ms: u32;
     let mut bg = 0;
 
     display.clear(background[bg]).unwrap();
     bg = (bg + 1) % background.len();
 
+    let clock_color = Rgb565::GREEN;
+    let bg_color = Rgb565::BLACK;
+    let text_style = MonoTextStyle::new(&FONT_10X20, clock_color);
+
+    display.clear(bg_color).unwrap();
+
+    let clock_face = create_face(&display);
+    draw_face(&mut display, &clock_face, clock_color).unwrap();
+
+    let mut prev_hour = 0;
+    let mut prev_minute = 0;
+    let mut prev_second = 0;    
+
     loop {
-        info!("Time: {}ms", elapsed_ms);
+        // let now = Timestamp::from_microsecond(rtc.current_time_us() as i64)?;
+        let now = rtc.current_time_us() as i64;
+        info!("now: {}", now);
+        elapsed_ms = (now / 1000) as u32;
+        info!("elapsed_ms: {}", elapsed_ms);
+        let secs = elapsed_ms / 1000;
+        let bedtime = 1000 * (secs + 1) - elapsed_ms;
+        let nanos = now % 1_000_000;
+        // let duration = chrono::Duration::milliseconds(now);
+        // let time = NaiveTime::from_hms_milli_opt(0, 0, secs, ms).unwrap();
+        let time = NaiveTime::from_num_seconds_from_midnight_opt(secs, nanos as u32).unwrap();
+
+        let mut time_str: String<64> = String::new();
+        write!(time_str, "Time: {:02}:{:02}:{:02}", time.hour(), time.minute(), time.second()).unwrap();
+
+        // info!("Time: {}ms", now);
+
+        info!("Time: {}", time_str);
+        
 
                 // erase previous text by drawing a filled rectangle behind the text area
         // adjust TXT_W/TXT_H to cover the longest text you'll draw
         const TXT_POS: Point = Point::new(0, 0);
         const TXT_W: u32 = 220;
-        const TXT_H: u32 = 12;
+        const TXT_H: u32 = 40;
         let erase = Rectangle::new(TXT_POS, Size::new(TXT_W, TXT_H))
-            .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK));
+            .into_styled(PrimitiveStyle::with_fill(bg_color));
         erase.draw(&mut display).unwrap();
         
-        let mut buf: String<64> = String::new();
-        write!(buf, "Time: {}ms", elapsed_ms).unwrap();
-        let text = Text::new(buf.as_str(), Point::new(10, 10), text_style);
+        // let mut buf: String<64> = String::new();
+        // write!(buf, "Time: {}ms", elapsed_ms).unwrap();
+        let text = Text::new(time_str.as_str(), Point::new(0, 30), text_style);
         text.draw(&mut display).unwrap();
 
         led.write([color, color2, color3].into_iter()).unwrap();
-        delay.delay_millis(1000);
-        elapsed_ms += 1000;
+        delay.delay_millis(bedtime);
+        // elapsed_ms += 1000;
 
         color3 = color2;
         color2 = color;
@@ -231,6 +271,42 @@ fn main() -> ! {
 
         // display.clear(background[bg]).unwrap();
         // bg = (bg + 1) % background.len();
+
+        let hour = time.hour();
+        let minute = time.minute();
+        let second = time.second();
+
+        if hour != prev_hour {
+             draw_hand(&mut display, &clock_face, bg_color, hour_to_angle(prev_hour), -60).unwrap();
+        }
+        if minute != prev_minute {
+             draw_hand(&mut display, &clock_face, bg_color, sexagesimal_to_angle(prev_minute), -30).unwrap();
+        }
+
+        if second != prev_second {
+            let seconds_radians = sexagesimal_to_angle(prev_second);
+            draw_hand(&mut display, &clock_face, bg_color, seconds_radians, 0).unwrap();
+            draw_second_decoration(&mut display, &clock_face, bg_color, bg_color, seconds_radians, -20).unwrap();
+        }
+
+        prev_hour = hour;
+        prev_minute = minute;
+        prev_second = second;
+
+        draw_hand(&mut display, &clock_face, clock_color, hour_to_angle(hour), -60).unwrap();
+        draw_hand(&mut display, &clock_face, clock_color, sexagesimal_to_angle(minute), -30).unwrap();
+
+        let seconds_radians = sexagesimal_to_angle(second);
+        draw_hand(&mut display, &clock_face, clock_color, seconds_radians, 0).unwrap();
+        draw_second_decoration(&mut display, &clock_face, clock_color, bg_color, seconds_radians, -20).unwrap();
+
+        // Draw a small circle over the hands in the center of the clock face.
+        // This has to happen after the hands are drawn so they're covered up.
+        Circle::with_center(clock_face.center(), 9)
+            .into_styled(PrimitiveStyle::with_fill(clock_color))
+            .draw(&mut display).unwrap();
+
+        // window.update(&display);
     }
      
     // let mut led = Output::new(peripherals.GPIO2, Level::Low, OutputConfig::default());

@@ -32,7 +32,8 @@ esp-hal-smartled = { git = "https://github.com/esp-rs/esp-hal-community.git", re
 mipidsi = "0.9"
 embedded-graphics = "0.8.1"
 heapless = "0.9.2"
-
+chrono = { version = "0.4.42", default-features = false }
+micromath = "2.1.0"
 
 [profile.dev]
 # Rust debug is too slow.
