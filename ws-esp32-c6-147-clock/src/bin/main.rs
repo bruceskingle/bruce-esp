@@ -11,6 +11,7 @@
 use core::fmt::Write;
 use chrono::NaiveTime;
 use chrono::Timelike;
+use defmt::info;
 use embedded_graphics::primitives::Circle;
 use embedded_graphics::primitives::{PrimitiveStyle, Rectangle};
 use esp_hal::rtc_cntl::Rtc;
@@ -27,36 +28,18 @@ use esp_hal::gpio::{Level, Output, OutputConfig};
 use esp_hal::main;
 use esp_hal::rmt::Rmt;
 use esp_hal::time::Rate;
-use esp_hal_smartled::{SmartLedsAdapter, smart_led_buffer};
-use smart_leds::{RGB8,SmartLedsWrite};
-use log::info;
+use mipidsi::models::ST7789;
 use esp_hal::spi::master::Config;
 use mipidsi::{Builder, models::ILI9341Rgb565, options::{Orientation, Rotation}};
 use embedded_graphics::{pixelcolor::Rgb565, prelude::*};
 use esp_hal::spi::master::Spi;
-use timer_blink_cyd::*;
+use ws_esp32_c6_147_clock::*;
 
 // This creates a default app-descriptor required by the esp-idf bootloader.
 // For more information see: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/app_image_format.html#application-description>
 esp_bootloader_esp_idf::esp_app_desc!();
 
-/* ******************************************************************************************************************************************************
- * This program displays a simple analog clock and blinks the first 3 LEDs on a WS2812 LED strip on the Cheap Yellow Display (CYD) or ESP32-2432S028R
- *  
- * The CYD uses an ILI9341 display connected via SPI. This uses GPIO pins:
-    let miso = peripherals.GPIO12;
-    let mosi = peripherals.GPIO13;
-    let sclk = peripherals.GPIO14;
-    let cs   = peripherals.GPIO15;
-    let dc   = peripherals.GPIO2;
-    let bl   = peripherals.GPIO21;  // Backlight pin
- * 
- * The WS2812 strip is connected to GPIO22, so you need to connect a WS2812 strip to the CYD board's CN1 connector (GND, GPIO22).
- * Since the CYD does not output 5V on CN1 you will need to power the WS2812 strip separately with 5V and connect the grounds together (by connecting the
- * CN! GND pin to the strip and then connecting a separate 5V power supply to the WS2812 additional power wires).
- * 
- * The CYD's RTC peripheral is used to keep track of time, but has no means of finding the real time of day so initializes the time to 8:05am at start.    
- ****************************************************************************************************************************************************** */
+
 
 
 
@@ -64,32 +47,32 @@ esp_bootloader_esp_idf::esp_app_desc!();
 fn main() -> ! {
     // generator version: 0.6.0
 
-    esp_println::logger::init_logger_from_env();
+    // esp_println::defmt::init_logger_from_env();
 
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
     let rmt = Rmt::new(peripherals.RMT, Rate::from_mhz(80)).unwrap();
-    let mut led = SmartLedsAdapter::new(rmt.channel0, peripherals.GPIO22,  smart_led_buffer!(3));
-
-    const LEVEL: u8 = 10;
-    let mut color = RGB8::default();
-    let mut color2 = RGB8::default();
-    let mut color3 = RGB8::default();
-    
-    color.r = LEVEL;
-    color2.g = LEVEL;
-    color3.b = LEVEL;
 
     let mut delay = Delay::new();
 
+    /*
+    
+    If you want to use the default mapping (like Waveshare example) for the LCD on ESP32-C6-LCD-1.47:
+SCK — GPIO 38
+MOSI — GPIO 39
+CS — GPIO 21
+DC — GPIO 45
+Plus typical VCC, GND, RST (reset), etc per your display’s wiring
+If you need full SPI (e.g. with MISO), you can also assign MISO to a spare GPIO, or use the board’s other SPI-capable pins (through the GPIO matrix) — but for a TFT LCD display typically you only need MOSI + SCK + CS + DC + Reset (and back-light if needed).
+     */
 
     // SPI pins (adjust if needed)
-    let miso = peripherals.GPIO12;
-    let mosi = peripherals.GPIO13;
-    let sclk = peripherals.GPIO14;
-    let cs   = peripherals.GPIO15;
-    let dc   = peripherals.GPIO2;
-    let bl   = peripherals.GPIO21;  // Backlight pin
+    // let miso = peripherals.GPIO39;
+    let mosi = peripherals.GPIO39;
+    let sclk = peripherals.GPIO38;
+    let cs   = peripherals.GPIO21;
+    let dc   = peripherals.GPIO45;
+    let bl   = peripherals.GPIO22;  // Backlight pin
 
     // Configure SPI
     let config = Config::default().with_mode( esp_hal::spi::Mode::_0)
@@ -105,7 +88,8 @@ fn main() -> ! {
         .unwrap()
         .with_sck(sclk)
         .with_mosi(mosi)
-        .with_miso(miso);
+        // .with_miso(miso)
+        ;
 
     // Re-enable display using `mipidsi`'s `SpiInterface` which targets embedded-hal v1.
     // We'll create a display interface from the already-created `spi_bus` and the DC/CS pins
@@ -188,8 +172,8 @@ fn main() -> ! {
     };
 
     // Initialize the display via the generic Builder using our local interface.
-    let mut display = Builder::new(ILI9341Rgb565, di)
-        .display_size(240, 320)
+    let mut display = Builder::new(ST7789, di)
+        .display_size(172, 320)
         .orientation(Orientation::new()
             .flip_horizontal()
             // .rotate(Rotation::Deg180)
@@ -257,7 +241,7 @@ fn main() -> ! {
 
         // info!("Time: {}ms", now);
 
-        info!("Time: {}", time_str);
+        info!("Time: {}", time_str.as_str());
         
 
                 // erase previous text by drawing a filled rectangle behind the text area
@@ -274,19 +258,8 @@ fn main() -> ! {
         let text = Text::new(time_str.as_str(), Point::new(0, 30), text_style);
         text.draw(&mut display).unwrap();
 
-        led.write([color, color2, color3].into_iter()).unwrap();
-        delay.delay_millis(bedtime);
-        // elapsed_ms += 1000;
-
-        color3 = color2;
-        color2 = color;
-        let tmp = color.r;
-        color.r = color.g;
-        color.g = color.b;
-        color.b = tmp;
-
-        // display.clear(background[bg]).unwrap();
-        // bg = (bg + 1) % background.len();
+                delay.delay_millis(bedtime);
+        
 
         let hour = time.hour();
         let minute = time.minute();
