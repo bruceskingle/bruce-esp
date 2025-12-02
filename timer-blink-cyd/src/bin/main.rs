@@ -67,9 +67,20 @@ fn main() -> ! {
     esp_println::logger::init_logger_from_env();
 
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
-    let peripherals = esp_hal::init(config);
-    let rmt = Rmt::new(peripherals.RMT, Rate::from_mhz(80)).unwrap();
-    let mut led = SmartLedsAdapter::new(rmt.channel0, peripherals.GPIO22,  smart_led_buffer!(3));
+    let peripherals: esp_hal::peripherals::Peripherals = esp_hal::init(config);
+    let mut delay = Delay::new();
+
+    
+    
+     let cyd_result = cyd_bsp::Builder::new()
+        .init(peripherals, &mut delay)
+        .unwrap();
+
+    let mut cyd = cyd_result.cyd;
+
+    let rmt = Rmt::new(cyd_result.remainder.rmt, Rate::from_mhz(80)).unwrap();
+
+    let mut led = SmartLedsAdapter::new(rmt.channel0, cyd_result.remainder.gpio22,  smart_led_buffer!(3));
 
     const LEVEL: u8 = 10;
     let mut color = RGB8::default();
@@ -80,131 +91,130 @@ fn main() -> ! {
     color2.g = LEVEL;
     color3.b = LEVEL;
 
-    let mut delay = Delay::new();
 
+    // // SPI pins (adjust if needed)
+    // let miso = peripherals.GPIO12;
+    // let mosi = peripherals.GPIO13;
+    // let sclk = peripherals.GPIO14;
+    // let cs   = peripherals.GPIO15;
+    // let dc   = peripherals.GPIO2;
+    // let bl   = peripherals.GPIO21;  // Backlight pin
 
-    // SPI pins (adjust if needed)
-    let miso = peripherals.GPIO12;
-    let mosi = peripherals.GPIO13;
-    let sclk = peripherals.GPIO14;
-    let cs   = peripherals.GPIO15;
-    let dc   = peripherals.GPIO2;
-    let bl   = peripherals.GPIO21;  // Backlight pin
-
-    // Configure SPI
-    let config = Config::default().with_mode( esp_hal::spi::Mode::_0)
-        .with_frequency(Rate::from_mhz(20))
-        .with_read_bit_order(esp_hal::spi::BitOrder::MsbFirst)
-        .with_write_bit_order(esp_hal::spi::BitOrder::MsbFirst);
-        // .with_cs_active_high(false);
+    // // Configure SPI
+    // let config = Config::default().with_mode( esp_hal::spi::Mode::_0)
+    //     .with_frequency(Rate::from_mhz(20))
+    //     .with_read_bit_order(esp_hal::spi::BitOrder::MsbFirst)
+    //     .with_write_bit_order(esp_hal::spi::BitOrder::MsbFirst);
+    //     // .with_cs_active_high(false);
     
-    let spi_bus = Spi::new(
-            peripherals.SPI2,
-            config,
-        )
-        .unwrap()
-        .with_sck(sclk)
-        .with_mosi(mosi)
-        .with_miso(miso);
+    // let spi_bus = Spi::new(
+    //         peripherals.SPI2,
+    //         config,
+    //     )
+    //     .unwrap()
+    //     .with_sck(sclk)
+    //     .with_mosi(mosi)
+    //     .with_miso(miso);
 
-    // Re-enable display using `mipidsi`'s `SpiInterface` which targets embedded-hal v1.
-    // We'll create a display interface from the already-created `spi_bus` and the DC/CS pins
-    // and then initialize the ILI9341 RGB565 driver.
-    // NOTE: if the compile fails here it's likely due to a trait-version mismatch in
-    // the dependency graph; we'll iterate on that if needed.
+    // // Re-enable display using `mipidsi`'s `SpiInterface` which targets embedded-hal v1.
+    // // We'll create a display interface from the already-created `spi_bus` and the DC/CS pins
+    // // and then initialize the ILI9341 RGB565 driver.
+    // // NOTE: if the compile fails here it's likely due to a trait-version mismatch in
+    // // the dependency graph; we'll iterate on that if needed.
 
-    // Create output pins (use esp-hal's Output wrapper) so we can toggle them directly
-    // without relying on embedded-hal trait impls from other crates.
-    let cs_out = Output::new(cs, Level::High, OutputConfig::default());
-    let dc_out = Output::new(dc, Level::High, OutputConfig::default());
+    // // Create output pins (use esp-hal's Output wrapper) so we can toggle them directly
+    // // without relying on embedded-hal trait impls from other crates.
+    // let cs_out = Output::new(cs, Level::High, OutputConfig::default());
+    // let dc_out = Output::new(dc, Level::High, OutputConfig::default());
 
-    // Local display interface wrapper (concrete types) that implements `mipidsi::interface::Interface`.
-    struct EspDi<'a> {
-        spi: esp_hal::spi::master::Spi<'a, esp_hal::Blocking>,
-        cs: Output<'a>,
-        dc: Output<'a>,
-    }
+    // // Local display interface wrapper (concrete types) that implements `mipidsi::interface::Interface`.
+    // struct EspDi<'a> {
+    //     spi: esp_hal::spi::master::Spi<'a, esp_hal::Blocking>,
+    //     cs: Output<'a>,
+    //     dc: Output<'a>,
+    // }
 
-    impl<'a> mipidsi::interface::Interface for EspDi<'a> {
-        type Word = u8;
-        type Error = esp_hal::spi::Error;
+    // impl<'a> mipidsi::interface::Interface for EspDi<'a> {
+    //     type Word = u8;
+    //     type Error = esp_hal::spi::Error;
 
-        fn send_command(&mut self, command: u8, args: &[u8]) -> Result<(), Self::Error> {
-            let _ = self.cs.set_low();
-            let _ = self.dc.set_low();
-            self.spi.write(&[command])?;
-            if !args.is_empty() {
-                let _ = self.dc.set_high();
-                self.spi.write(args)?;
-            }
-            let _ = self.cs.set_high();
-            Ok(())
-        }
+    //     fn send_command(&mut self, command: u8, args: &[u8]) -> Result<(), Self::Error> {
+    //         let _ = self.cs.set_low();
+    //         let _ = self.dc.set_low();
+    //         self.spi.write(&[command])?;
+    //         if !args.is_empty() {
+    //             let _ = self.dc.set_high();
+    //             self.spi.write(args)?;
+    //         }
+    //         let _ = self.cs.set_high();
+    //         Ok(())
+    //     }
 
-        fn send_pixels<const N: usize>(
-            &mut self,
-            pixels: impl IntoIterator<Item = [Self::Word; N]>,
-        ) -> Result<(), Self::Error> {
-            let _ = self.cs.set_low();
-            let _ = self.dc.set_high();
-            for chunk in pixels {
-                // chunk is [u8; N]
-                self.spi.write(&chunk)?;
-            }
-            let _ = self.cs.set_high();
-            Ok(())
-        }
+    //     fn send_pixels<const N: usize>(
+    //         &mut self,
+    //         pixels: impl IntoIterator<Item = [Self::Word; N]>,
+    //     ) -> Result<(), Self::Error> {
+    //         let _ = self.cs.set_low();
+    //         let _ = self.dc.set_high();
+    //         for chunk in pixels {
+    //             // chunk is [u8; N]
+    //             self.spi.write(&chunk)?;
+    //         }
+    //         let _ = self.cs.set_high();
+    //         Ok(())
+    //     }
 
-        fn send_repeated_pixel<const N: usize>(
-            &mut self,
-            pixel: [Self::Word; N],
-            mut count: u32,
-        ) -> Result<(), Self::Error> {
-            let _ = self.cs.set_low();
-            let _ = self.dc.set_high();
-            let mut buf = [0u8; 64];
-            while count > 0 {
-                let chunk_count = core::cmp::min(count, (buf.len() / N) as u32);
-                let mut idx = 0usize;
-                for _ in 0..chunk_count {
-                    for &b in &pixel {
-                        buf[idx] = b;
-                        idx += 1;
-                    }
-                }
-                self.spi.write(&buf[..idx])?;
-                count -= chunk_count;
-            }
-            let _ = self.cs.set_high();
-            Ok(())
-        }
-    }
+    //     fn send_repeated_pixel<const N: usize>(
+    //         &mut self,
+    //         pixel: [Self::Word; N],
+    //         mut count: u32,
+    //     ) -> Result<(), Self::Error> {
+    //         let _ = self.cs.set_low();
+    //         let _ = self.dc.set_high();
+    //         let mut buf = [0u8; 64];
+    //         while count > 0 {
+    //             let chunk_count = core::cmp::min(count, (buf.len() / N) as u32);
+    //             let mut idx = 0usize;
+    //             for _ in 0..chunk_count {
+    //                 for &b in &pixel {
+    //                     buf[idx] = b;
+    //                     idx += 1;
+    //                 }
+    //             }
+    //             self.spi.write(&buf[..idx])?;
+    //             count -= chunk_count;
+    //         }
+    //         let _ = self.cs.set_high();
+    //         Ok(())
+    //     }
+    // }
 
-    // Build the interface instance (moves `spi_bus` into the wrapper)
-    let di = EspDi {
-        spi: spi_bus,
-        cs: cs_out,
-        dc: dc_out,
-    };
+    // // Build the interface instance (moves `spi_bus` into the wrapper)
+    // let di = EspDi {
+    //     spi: spi_bus,
+    //     cs: cs_out,
+    //     dc: dc_out,
+    // };
 
-    // Initialize the display via the generic Builder using our local interface.
-    let mut display = Builder::new(ILI9341Rgb565, di)
-        .display_size(240, 320)
-        .orientation(Orientation::new()
-            .flip_horizontal()
-            // .rotate(Rotation::Deg180)
-        )
-        .init(&mut delay)
-        .unwrap();
+    // // Initialize the display via the generic Builder using our local interface.
+    // let mut display = Builder::new(ILI9341Rgb565, di)
+    //     .display_size(240, 320)
+    //     .orientation(Orientation::new()
+    //         .flip_horizontal()
+    //         // .rotate(Rotation::Deg180)
+    //     )
+    //     .init(&mut delay)
+    //     .unwrap();
 
+    cyd.backlight(true);
 
+    // // Turn on the backlight
+    // let mut backlight: Output<'_> = Output::new(bl, Level::High, OutputConfig::default());
+    // backlight.set_high();
 
-    // Turn on the backlight
-    let mut backlight = Output::new(bl, Level::High, OutputConfig::default());
-    backlight.set_high();
+    // let mut display = cyd_display.display;
 
-
-    display.clear(Rgb565::RED).unwrap();
+    cyd.display.clear(Rgb565::RED).unwrap();
 
     let background = [Rgb565::GREEN, Rgb565::WHITE, Rgb565::RED, Rgb565::GREEN, Rgb565::BLUE];
 
@@ -215,7 +225,7 @@ fn main() -> ! {
     //     text.draw(&mut display).unwrap();
     // }
 
-    let rtc = Rtc::new(peripherals.LPWR);
+    let rtc = Rtc::new(cyd_result.remainder.lpwr);
     
 
 
@@ -223,21 +233,23 @@ fn main() -> ! {
     let mut elapsed_ms: u32;
     let mut bg = 0;
 
-    display.clear(background[bg]).unwrap();
+    cyd.display.clear(background[bg]).unwrap();
     bg = (bg + 1) % background.len();
 
     let clock_color = Rgb565::GREEN;
     let bg_color = Rgb565::BLACK;
     let text_style = MonoTextStyle::new(&FONT_10X20, clock_color);
 
-    display.clear(bg_color).unwrap();
+    cyd.display.clear(bg_color).unwrap();
 
-    let clock_face = create_face(&display);
-    draw_face(&mut display, &clock_face, clock_color).unwrap();
+    let clock_face = create_face(&cyd.display);
+    draw_face(&mut cyd.display, &clock_face, clock_color).unwrap();
 
     let mut prev_hour = 0;
     let mut prev_minute = 0;
-    let mut prev_second = 0;    
+    let mut prev_second = 0;
+
+    let mut led_cnt=0;
 
     loop {
         // let now = Timestamp::from_microsecond(rtc.current_time_us() as i64)?;
@@ -267,12 +279,12 @@ fn main() -> ! {
         const TXT_H: u32 = 40;
         let erase = Rectangle::new(TXT_POS, Size::new(TXT_W, TXT_H))
             .into_styled(PrimitiveStyle::with_fill(bg_color));
-        erase.draw(&mut display).unwrap();
+        erase.draw(&mut cyd.display).unwrap();
         
         // let mut buf: String<64> = String::new();
         // write!(buf, "Time: {}ms", elapsed_ms).unwrap();
         let text = Text::new(time_str.as_str(), Point::new(0, 30), text_style);
-        text.draw(&mut display).unwrap();
+        text.draw(&mut cyd.display).unwrap();
 
         led.write([color, color2, color3].into_iter()).unwrap();
         delay.delay_millis(bedtime);
@@ -285,6 +297,20 @@ fn main() -> ! {
         color.g = color.b;
         color.b = tmp;
 
+        led_cnt = if led_cnt == 0 {
+            cyd.led_red(true);
+            cyd.led_blue(false);
+            1
+        } else if led_cnt == 1 {
+            cyd.led_green(true);
+            cyd.led_red(false);
+            2
+        } else {
+            cyd.led_blue(true);
+            cyd.led_green(false);
+            0
+        };
+
         // display.clear(background[bg]).unwrap();
         // bg = (bg + 1) % background.len();
 
@@ -293,34 +319,34 @@ fn main() -> ! {
         let second = time.second();
 
         if hour != prev_hour {
-             draw_hand(&mut display, &clock_face, bg_color, hour_to_angle(prev_hour), -60).unwrap();
+             draw_hand(&mut cyd.display, &clock_face, bg_color, hour_to_angle(prev_hour), -60).unwrap();
         }
         if minute != prev_minute {
-             draw_hand(&mut display, &clock_face, bg_color, sexagesimal_to_angle(prev_minute), -30).unwrap();
+             draw_hand(&mut cyd.display, &clock_face, bg_color, sexagesimal_to_angle(prev_minute), -30).unwrap();
         }
 
         if second != prev_second {
             let seconds_radians = sexagesimal_to_angle(prev_second);
-            draw_hand(&mut display, &clock_face, bg_color, seconds_radians, 0).unwrap();
-            draw_second_decoration(&mut display, &clock_face, bg_color, bg_color, seconds_radians, -20).unwrap();
+            draw_hand(&mut cyd.display, &clock_face, bg_color, seconds_radians, 0).unwrap();
+            draw_second_decoration(&mut cyd.display, &clock_face, bg_color, bg_color, seconds_radians, -20).unwrap();
         }
 
         prev_hour = hour;
         prev_minute = minute;
         prev_second = second;
 
-        draw_hand(&mut display, &clock_face, clock_color, hour_to_angle(hour), -60).unwrap();
-        draw_hand(&mut display, &clock_face, clock_color, sexagesimal_to_angle(minute), -30).unwrap();
+        draw_hand(&mut cyd.display, &clock_face, clock_color, hour_to_angle(hour), -60).unwrap();
+        draw_hand(&mut cyd.display, &clock_face, clock_color, sexagesimal_to_angle(minute), -30).unwrap();
 
         let seconds_radians = sexagesimal_to_angle(second);
-        draw_hand(&mut display, &clock_face, clock_color, seconds_radians, 0).unwrap();
-        draw_second_decoration(&mut display, &clock_face, clock_color, bg_color, seconds_radians, -20).unwrap();
+        draw_hand(&mut cyd.display, &clock_face, clock_color, seconds_radians, 0).unwrap();
+        draw_second_decoration(&mut cyd.display, &clock_face, clock_color, bg_color, seconds_radians, -20).unwrap();
 
         // Draw a small circle over the hands in the center of the clock face.
         // This has to happen after the hands are drawn so they're covered up.
         Circle::with_center(clock_face.center(), 9)
             .into_styled(PrimitiveStyle::with_fill(clock_color))
-            .draw(&mut display).unwrap();
+            .draw(&mut cyd.display).unwrap();
 
         // window.update(&display);
     }
