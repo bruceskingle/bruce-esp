@@ -69,8 +69,6 @@ fn main() -> ! {
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals: esp_hal::peripherals::Peripherals = esp_hal::init(config);
     let mut delay = Delay::new();
-
-    
     
      let cyd_result = cyd_bsp::Builder::new()
         .init(peripherals, &mut delay)

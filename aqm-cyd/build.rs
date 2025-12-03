@@ -3,6 +3,13 @@ fn main() {
     println!("cargo:rustc-link-arg=-Tdefmt.x");
     // make sure linkall.x is the last linker script (otherwise might cause problems with flip-link)
     println!("cargo:rustc-link-arg=-Tlinkall.x");
+
+
+    // Tell rustc where to find the static lib
+    println!("cargo:rustc-link-search=native=bsec");
+
+    // Link the static library (remove "lib" prefix and ".a")
+    println!("cargo:rustc-link-lib=static=algobsec");
 }
 
 fn linker_be_nice() {

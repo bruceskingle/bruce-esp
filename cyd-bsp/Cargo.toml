@@ -6,11 +6,11 @@ edition = "2024"
 [dependencies]
 esp-hal = { version = "=1.0.0", features = [
   "esp32",
-  "log-04",
+  "defmt",
   "unstable",
 ] }
 mipidsi = "0.9"
-
+defmt                  = "1.0.1"
 
 
 
@@ -18,16 +18,16 @@ mipidsi = "0.9"
 
 
 esp-bootloader-esp-idf = { version = "0.3.0", features = ["esp32"] }
-log                    = "0.4.27"
 
 critical-section = "1.2.0"
 esp-alloc = "0.9.0"
-esp-backtrace = { version = "0.18.0", features = [
+
+esp-backtrace = { version = "0.18.1", features = [
+  "defmt",
   "esp32",
   "panic-handler",
-  "println",
 ] }
-esp-println = { version = "0.16.0", features = ["esp32", "log-04"] }
+esp-println = { version = "0.16.1", features = ["defmt-espflash", "esp32"] }
 smart-leds = "0.4.0"
 esp-hal-smartled = { git = "https://github.com/esp-rs/esp-hal-community.git", rev = "728f276b785b6ea4eb538beb1e1a44fe5429b2d1", version = "0.17.0", features = ["esp32"] }
 embedded-graphics = "0.8.1"

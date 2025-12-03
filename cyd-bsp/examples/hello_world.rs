@@ -11,7 +11,7 @@
 use embedded_graphics::text::Text;
 use embedded_graphics::mono_font::MonoTextStyle;
 use embedded_graphics::mono_font::ascii::FONT_10X20;
-use esp_backtrace as _;
+use {esp_backtrace as _, esp_println as _};
 use esp_hal::clock::CpuClock;
 use esp_hal::delay::Delay;
 use esp_hal::main;

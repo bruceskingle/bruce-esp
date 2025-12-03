@@ -44,6 +44,8 @@ pub struct CydRemainder<'a> {
     pub gpio35: esp_hal::peripherals::GPIO35<'a>,
     pub lpwr: esp_hal::peripherals::LPWR<'a>,
     pub rmt: esp_hal::peripherals::RMT<'a>,
+    pub timg0: esp_hal::peripherals::TIMG0<'a>,
+    pub i2c0: esp_hal::peripherals::I2C0<'a>,
 }
 
 pub struct Cyd<'a> {
@@ -247,6 +249,8 @@ impl Builder {
                 gpio35: peripherals.GPIO35,
                 lpwr: peripherals.LPWR,
                 rmt: peripherals.RMT,
+                timg0: peripherals.TIMG0,
+                i2c0: peripherals.I2C0,
             }
         })
     }

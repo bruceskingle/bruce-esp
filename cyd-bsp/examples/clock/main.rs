@@ -11,6 +11,7 @@ mod clock;
 
 use core::fmt::Write;
 
+use defmt::info;
 use chrono::{NaiveTime, Timelike};
 use embedded_graphics::{
     mono_font::{ascii::FONT_10X20, MonoTextStyle},
@@ -20,9 +21,8 @@ use embedded_graphics::{
     text::Text,
 };
 use heapless::String;
-use log::info;
 
-use esp_backtrace as _;
+use {esp_backtrace as _, esp_println as _};
 use esp_hal::{
     main,
     clock::CpuClock,
@@ -48,8 +48,6 @@ esp_bootloader_esp_idf::esp_app_desc!();
 
 #[main]
 fn main() -> ! {
-    esp_println::logger::init_logger_from_env();
-
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals: esp_hal::peripherals::Peripherals = esp_hal::init(config);
     let mut delay = Delay::new();
@@ -96,7 +94,7 @@ fn main() -> ! {
         let mut time_str: String<64> = String::new();
         write!(time_str, "Time: {:02}:{:02}:{:02}", time.hour(), time.minute(), time.second()).unwrap();
 
-        info!("Time: {}", time_str);
+        info!("Time: {}", time_str.as_str());
         
 
         // erase previous text by drawing a filled rectangle behind the text area

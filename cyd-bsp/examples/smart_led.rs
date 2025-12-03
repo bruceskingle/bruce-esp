@@ -8,8 +8,9 @@
 )]
 
 
-use log::info;
-use esp_backtrace as _;
+use defmt::info;
+
+use {esp_backtrace as _, esp_println as _};
 use esp_hal::clock::CpuClock;
 use esp_hal::delay::Delay;
 use esp_hal::main;
@@ -36,7 +37,7 @@ esp_bootloader_esp_idf::esp_app_desc!();
 
 #[main]
 fn main() -> ! {
-    esp_println::logger::init_logger_from_env();
+    // esp_println::logger::init_logger_from_env();
 
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals: esp_hal::peripherals::Peripherals = esp_hal::init(config);
