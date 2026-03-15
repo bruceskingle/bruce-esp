@@ -93,18 +93,20 @@ fn run() -> anyhow::Result<()> {
     let opt_config = config_manager.lock().unwrap().load_config();
 
 
-    server_manager.fn_handler("/", esp_idf_svc::http::Method::Get, move |req|  -> anyhow::Result<()> {
-            let mut response = req.into_ok_response()?;
-            // unwrapping the mutex lock calls because if there is a poisoned mutex we want to panic anyway
-            response.write(format!("Hello").as_bytes())?;
-            response.flush()?;
-            led.lock().unwrap().toggle()?;
-            Ok(())
-        })?;
 
     if let Some(config) = opt_config {
         log::info!("Loaded config: {:?}", config);
 
+
+        // server_manager.fn_handler("/", esp_idf_svc::http::Method::Get, move |req|  -> anyhow::Result<()> {
+        //         let mut response = req.into_ok_response()?;
+        //         // unwrapping the mutex lock calls because if there is a poisoned mutex we want to panic anyway
+        //         response.write(format!("Hello").as_bytes())?;
+        //         response.flush()?;
+        //         led.lock().unwrap().toggle()?;
+        //         Ok(())
+        //     })?;
+            
         let current_dns = resolve_local_dns()?;
 
         let addr = Arc::new(Mutex::new(current_dns));
@@ -145,17 +147,7 @@ fn run() -> anyhow::Result<()> {
 
     log::info!("No config found");
 
-    server_manager.fn_handler("/generate_204", Method::Get, |req| {
-        let mut resp = req.into_response(302, None, &[("Location", "/")])?;
-        resp.write(b"")?;
-        Ok(())
-    })?;
-
-    server_manager.fn_handler("/hotspot-detect.html", Method::Get, |req| {
-        let mut resp = req.into_response(302, None, &[("Location", "/")])?;
-        resp.write(b"")?;
-        Ok(())
-    })?;
+    server_manager.init_ap_pages()?;
 
     let server_addr = futures::executor::block_on(wifi_manager.start_access_point())?;
 
@@ -181,10 +173,10 @@ fn captive_dns_server(server_addr: std::net::Ipv4Addr)  {
     loop {
         let mut buf = [0u8; 512];
 
-        info!("DNS server recv_from...");
+        // info!("DNS server recv_from...");
         let (size, src) = socket.recv_from(&mut buf).unwrap();
 
-        info!("DNS server recv_from...{:?}", &buf[..size]);
+        // info!("DNS server recv_from...{:?}", &buf[..size]);
 
         let response = build_dns_response(&buf[..size], &addr_bytes);
 
@@ -193,7 +185,7 @@ fn captive_dns_server(server_addr: std::net::Ipv4Addr)  {
 }
 
 fn build_dns_response(query: &[u8], server_addr: &[u8; 4]) -> Vec<u8> {
-    info!("Received DNS query: {:?}", query);
+    // info!("Received DNS query: {:?}", query);
     let mut resp = query.to_vec();
 
     resp[2] |= 0x80; // set QR bit (response)
@@ -213,7 +205,7 @@ fn build_dns_response(query: &[u8], server_addr: &[u8; 4]) -> Vec<u8> {
         server_addr[0], server_addr[1], server_addr[2], server_addr[3] // IP address
     ]);
 
-    info!("Sending DNS response: {:?}", resp);
+    // info!("Sending DNS response: {:?}", resp);
     
     resp
 }
