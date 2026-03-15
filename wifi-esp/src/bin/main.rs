@@ -30,14 +30,17 @@ use esp_hal::{
     timer::timg::TimerGroup,
 };
 use esp_println::println;
-use esp_radio::wifi::{
-    ModeConfig,
-    WifiController,
-    WifiDevice,
-    WifiEvent,
-    WifiStationState,
-    scan::ScanConfig,
-    sta::StationConfig,
+use esp_radio::{
+    Controller,
+    wifi::{
+        ClientConfig,
+        ModeConfig,
+        ScanConfig,
+        WifiController,
+        WifiDevice,
+        WifiEvent,
+        WifiStaState,
+    },
 };
 use defmt::{error, info};
 use sntpc::{NtpContext, NtpTimestampGenerator, get_time};
@@ -82,32 +85,6 @@ impl NtpTimestampGenerator for Timestamp<'_> {
     }
 }
 
-
-// async fn get_address2(stack: &embassy_net::Stack<WifiDevice<'static>>) -> Vec<IpAddr, 4> {
-//     loop {
-//         println!("DNS Lookup...");
-//         match stack.dns_query(NTP_SERVER, DnsQueryType::A).await {
-//             Ok(addrs) => return addrs,
-//             Err(e) => {
-//                 println!("DNS query failed: {e:?}");
-//             }
-//         }
-//     }
-// }
-
-async fn get_address(stack: &'static embassy_net::Stack<WifiDevice<'_>>) -> heapless::Vec<IpAddr, 4> {
-    
-    loop {
-        println!("DNS Lookup...");
-        match stack.dns_query(NTP_SERVER, DnsQueryType::A).await {
-            Ok(addrs) => return addrs,
-            Err(e) => {
-                println!("DNS query failed: {e:?}");
-            }
-        }
-    }
-}
-
 #[esp_rtos::main]
 async fn main(spawner: Spawner) -> ! {
     // esp_println::logger::init_logger_from_env();
@@ -123,8 +100,10 @@ async fn main(spawner: Spawner) -> ! {
         //, sw_int.software_interrupt0
         );
 
+    let esp_radio_ctrl = &*mk_static!(Controller<'static>, esp_radio::init().unwrap());
+
     let (controller, interfaces) =
-        esp_radio::wifi::new(peripherals.WIFI, Default::default()).unwrap();
+        esp_radio::wifi::new(esp_radio_ctrl, peripherals.WIFI, Default::default()).unwrap();
 
     let wifi_interface = interfaces.sta;
 
@@ -156,24 +135,17 @@ async fn main(spawner: Spawner) -> ! {
         Timer::after(Duration::from_millis(500)).await;
     }
 
-    println!("Waiting to get IP address...");
+    
     loop {
+        println!("Waiting to get IP address...");
         if let Some(config) = stack.config_v4() {
             println!("Got IP: {}", config.address);
             break;
         }
         Timer::after(Duration::from_millis(500)).await;
-        println!("retry...");
     }
 
-    let ntp_addrs = get_address(stack).await;
-    println!("DNS Lookup...");
-    let ntp_addrs = match stack.dns_query(NTP_SERVER, DnsQueryType::A).await {
-        Ok(addrs) => addrs,
-        Err(e) => {
-            panic!("DNS query failed: {e:?}");
-        }
-    };
+    let ntp_addrs = stack.dns_query(NTP_SERVER, DnsQueryType::A).await.unwrap();
 
     if ntp_addrs.is_empty() {
         panic!("Failed to resolve DNS. Empty result");
@@ -191,7 +163,7 @@ async fn main(spawner: Spawner) -> ! {
 
     // Display initial Rtc time before synchronization
     let now = jiff::Timestamp::from_microsecond(rtc.current_time_us() as i64).unwrap();
-    info!("Rtc: {now}");
+    println!("Rtc: {now}");
 
     loop {
         let addr: IpAddr = ntp_addrs[0].into();
@@ -214,7 +186,7 @@ async fn main(spawner: Spawner) -> ! {
                 );
 
                 // Compare RTC to parsed time
-                info!(
+                println!(
                     "Response: {:?}\nTime: {}\nRtc : {}",
                     time,
                     // Create a Jiff Timestamp from seconds and nanoseconds
@@ -232,7 +204,7 @@ async fn main(spawner: Spawner) -> ! {
                 );
             }
             Err(e) => {
-                error!("Error getting time: {e:?}");
+                println!("Error getting time: {e:?}");
             }
         }
 
@@ -245,20 +217,18 @@ async fn connection(mut controller: WifiController<'static>) {
     println!("start connection task");
     println!("Device capabilities: {:?}", controller.capabilities());
     loop {
-        if esp_radio::wifi::station_state() == WifiStationState::Connected {
+        if esp_radio::wifi::sta_state() == WifiStaState::Connected {
             // wait until we're no longer connected
-            controller
-                .wait_for_event(WifiEvent::StationDisconnected)
-                .await;
+            controller.wait_for_event(WifiEvent::StaDisconnected).await;
             Timer::after(Duration::from_millis(5000)).await
         }
         if !matches!(controller.is_started(), Ok(true)) {
-            let station_config = ModeConfig::Station(
-                StationConfig::default()
+            let client_config = ModeConfig::Client(
+                ClientConfig::default()
                     .with_ssid(SSID.into())
                     .with_password(PASSWORD.into()),
             );
-            controller.set_config(&station_config).unwrap();
+            controller.set_config(&client_config).unwrap();
             println!("Starting wifi");
             controller.start_async().await.unwrap();
             println!("Wifi started!");

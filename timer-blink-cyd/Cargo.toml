@@ -14,20 +14,22 @@ cyd-bsp = {version = "0.1.0", path = "../cyd-bsp" }
 
 esp-hal = { version = "=1.0.0", features = [
   "esp32",
-  "log-04",
+  "defmt",
   "unstable",
 ] }
 
 
-esp-bootloader-esp-idf = { version = "0.3.0", features = ["esp32"] }
-log                    = "0.4.27"
+#esp-bootloader-esp-idf = { version = "0.3.0", features = ["esp32"] }
+#log                    = "0.4.27"
+defmt                  = "1.0.1"
+esp-bootloader-esp-idf = { version = "0.4.0", features = ["defmt", "esp32"] }
 
 critical-section = "1.2.0"
 esp-alloc = "0.9.0"
 esp-backtrace = { version = "0.18.0", features = [
   "esp32",
   "panic-handler",
-  "println",
+  "defmt",
 ] }
 esp-println = { version = "0.16.0", features = ["esp32", "log-04"] }
 smart-leds = "0.4.0"

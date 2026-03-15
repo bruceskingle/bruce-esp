@@ -7,7 +7,7 @@
     holding buffers for the duration of a data transfer."
 )]
 
-
+use defmt::info;
 use core::fmt::Write;
 use chrono::NaiveTime;
 use chrono::Timelike;
@@ -29,7 +29,6 @@ use esp_hal::rmt::Rmt;
 use esp_hal::time::Rate;
 use esp_hal_smartled::{SmartLedsAdapter, smart_led_buffer};
 use smart_leds::{RGB8,SmartLedsWrite};
-use log::info;
 use esp_hal::spi::master::Config;
 use mipidsi::{Builder, models::ILI9341Rgb565, options::{Orientation, Rotation}};
 use embedded_graphics::{pixelcolor::Rgb565, prelude::*};
@@ -267,7 +266,7 @@ fn main() -> ! {
 
         // info!("Time: {}ms", now);
 
-        info!("Time: {}", time_str);
+        info!("Time: {}", time_str.as_str());
         
 
                 // erase previous text by drawing a filled rectangle behind the text area
