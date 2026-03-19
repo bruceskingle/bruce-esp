@@ -88,15 +88,19 @@ fn run() -> anyhow::Result<()> {
 
     let led = Arc::new(Mutex::new(led_pin));
 
+    let config_manager = ConfigManager::new(nvs_partition)?;
     let mut server_manager = HttpServerManager::new()?;
-    let config_manager = ConfigManager::new(&mut server_manager, nvs_partition)?;
-    let opt_config = config_manager.lock().unwrap().load_config();
+    
+    ConfigManager::create_pages(&config_manager, &mut server_manager)?;
 
 
+    if config_manager.is_config_valid() {
+        log::info!("Loaded config");
 
-    if let Some(config) = opt_config {
-        log::info!("Loaded config: {:?}", config);
-
+        // start wifi
+        futures::executor::block_on(
+            wifi_manager.start_client(&config_manager))?;
+        info!("Wifi started");
 
         // server_manager.fn_handler("/", esp_idf_svc::http::Method::Get, move |req|  -> anyhow::Result<()> {
         //         let mut response = req.into_ok_response()?;
@@ -108,6 +112,8 @@ fn run() -> anyhow::Result<()> {
         //     })?;
             
         let current_dns = resolve_local_dns()?;
+
+        info!("Current DNS resolution for home.skingle.org: {}", current_dns);
 
         let addr = Arc::new(Mutex::new(current_dns));
 

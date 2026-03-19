@@ -35,70 +35,7 @@ impl HttpServerManager<'_> {
         *self.configured.lock().unwrap() = false;
 
         
-        let configured_clone1 = self.configured.clone();
-        self.fn_handler("/generate_204", Method::Get, move |req| {
-
-            let ok = *configured_clone1.lock().unwrap();
-
-            // info!("Received request for /hotspot-detect.html from {}", req.connection().remote_addr());
-
-            info!("Received {:?} request for {} configured={}", req.method(), req.uri(), ok);
-            
-            
-            if ok { 
-                let mut resp = req.into_ok_response()?;        
-                resp.write(b"<HTML><BODY>Success</BODY></HTML>")?;
-            } else {
-                let mut resp = req.into_response(302, None, &[("Location", "/")])?;
-                resp.write(b"<HTML><BODY>Not configured</BODY></HTML>")?;
-            }
-            Ok(())
-        })?;
-
-        let configured_clone1 = self.configured.clone();
-        self.fn_handler("/hotspot-detect.html", Method::Get, move |req| {
-
-            let ok = *configured_clone1.lock().unwrap();
-
-            // info!("Received request for /hotspot-detect.html from {}", req.connection().remote_addr());
-
-            info!("Received {:?} request for {} configured={} V2", req.method(), req.uri(), ok);
-            
-            if ok {  
-                let mut resp = req.into_ok_response()?;       
-                resp.write(b"<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 3.2//EN\">
-<HTML>
-<HEAD>
-	<TITLE>Success</TITLE>
-</HEAD>
-<BODY>
-	Success
-</BODY>
-</HTML>")?;
-            } else {let mut resp = req.into_response(302, None, &[("Location", "/")])?;
-                resp.write(b"<HTML><BODY>Not configured</BODY></HTML>")?;
-            }
-            Ok(())
-        })?;
-
-        let configured_clone1 = self.configured.clone();
-        self.fn_handler("/connecttest.txt", Method::Get, move |req| {
-
-            let ok = *configured_clone1.lock().unwrap();
-
-            // info!("Received request for /hotspot-detect.html from {}", req.connection().remote_addr());
-
-            info!("Received {:?} request for {} configured={}", req.method(), req.uri(), ok);
-            
-            if ok {  
-                let mut resp = req.into_ok_response()?;       
-                resp.write(b"Microsoft Connect Test")?;
-            } else {
-                let mut resp = req.into_response(302, None, &[("Location", "/")])?;
-                resp.write(b"Not configured")?;
-            }
-            Ok(())
-        })?;
+        
 
         self.fn_handler("/", Method::Get, |req| {
 
@@ -107,14 +44,35 @@ impl HttpServerManager<'_> {
             info!("Received {:?} request for {}", req.method(), req.uri());
 
             let html = r#"
-                <html>
+                <!DOCTYPE html>
+                <html lang="en">
+                <head>
+                    <meta charset="utf-8" />
+                    <meta name="viewport" content="width=device-width, initial-scale=1" />
+                    <title>ESP32 Setup</title>
+                    <style>
+                        body { font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif; margin: 0; padding: 0; background: #f7f7f7; }
+                        .page { max-width: 480px; margin: 0 auto; padding: 18px; }
+                        h1 { font-size: 1.5rem; margin-bottom: 1rem; }
+                        label { display: block; margin: 12px 0 6px; font-weight: 600; }
+                        input { width: 100%; padding: 10px 10px; border: 1px solid #ccc; border-radius: 8px; box-sizing: border-box; }
+                        button { margin-top: 18px; width: 100%; padding: 12px; font-size: 1rem; border-radius: 10px; border: none; background: #007aff; color: #fff; }
+                        button:active { background: #005bb5; }
+                    </style>
+                </head>
                 <body>
-                <h1>ESP32 Setup</h1>
-                <form method="POST" action="/connect">
-                WiFi SSID:<input name="ssid"><br>
-                WiFi PASS:<input name="pass" type="password"><br>
-                <button>Save</button>
-                </form>
+                    <div class="page">
+                        <h1>ESP32 Setup</h1>
+                        <form method="POST" action="/connect">
+                            <label for="ssid">WiFi SSID</label>
+                            <input id="ssid" name="ssid" autocomplete="off" required />
+
+                            <label for="pass">WiFi Password</label>
+                            <input id="pass" name="pass" type="password" autocomplete="off" required />
+
+                            <button type="submit">Save</button>
+                        </form>
+                    </div>
                 </body>
                 </html>
                 "#;

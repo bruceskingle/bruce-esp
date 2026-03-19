@@ -6,18 +6,19 @@ use esp_idf_svc::wifi::AsyncWifi;
 use esp_idf_svc::wifi::AuthMethod;
 use esp_idf_svc::wifi::Configuration;
 use esp_idf_svc::wifi::EspWifi;
+use web_idf_esp::PASSWORD_LEN;
+use web_idf_esp::SSID_LEN;
 use std::net::Ipv4Addr;
+use std::sync::Arc;
 use log::info;
 use esp_idf_svc::handle::RawHandle;
 use esp_idf_svc::timer::{EspTimerService, Task};
 use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::ping::EspPing;
-use anyhow::Result;
 use esp_idf_svc::nvs::EspNvsPartition;
 use esp_idf_svc::nvs::NvsDefault;
 
-const SSID: &str = env!("WIFI_SSID");
-const PASS: &str = env!("WIFI_PASS");
+use crate::config::ConfigManager;
 
 pub struct WiFiManager<'a> {
     wifi: AsyncWifi<EspWifi<'a>>,
@@ -43,8 +44,8 @@ impl WiFiManager<'_> {
         
 
         let ap_config = AccessPointConfiguration {
-            ssid: heapless::String::<32>::try_from("ESP32-Setup").unwrap(),
-            password: heapless::String::<64>::try_from("password").unwrap(),
+            ssid: heapless::String::<SSID_LEN>::try_from("ESP32-Setup").unwrap(),
+            password: heapless::String::<PASSWORD_LEN>::try_from("password").unwrap(),
             channel: 1,
             auth_method: AuthMethod::WPA2Personal,
             max_connections: 4,
@@ -175,6 +176,38 @@ impl WiFiManager<'_> {
         Ok(ip_info.ip)
     }
 
+    pub async fn start_client(&mut self, config_manager: &Arc<ConfigManager>) -> anyhow::Result<std::net::Ipv4Addr> {
+
+        let wifi_configuration: embedded_svc::wifi::Configuration = embedded_svc::wifi::Configuration::Client(ClientConfiguration {
+            ssid: heapless::String::<32>::try_from(config_manager.get_valid_config(crate::config::SSID)?.as_str()).unwrap(),
+            bssid: None,
+            auth_method: embedded_svc::wifi::AuthMethod::WPA2Personal,
+            password: heapless::String::<64>::try_from(config_manager.get_valid_config(crate::config::WIFI_PASSWORD)?.as_str()).unwrap(),
+            channel: None,
+            scan_method: esp_idf_svc::wifi::ScanMethod::FastScan,
+            pmf_cfg: esp_idf_svc::wifi::PmfConfiguration::NotCapable,
+        });
+
+        self.wifi.set_configuration(&wifi_configuration)?;
+
+        self.wifi.start().await?;
+        info!("Wifi started");
+
+        self.wifi.connect().await?;
+        info!("Wifi connected");
+
+        self.wifi.wait_netif_up().await?;
+        info!("Wifi netif up");
+
+        let ip_info = self.wifi.wifi().sta_netif().get_ip_info()?;
+
+        println!("Wifi DHCP info: {:?}", ip_info);
+        
+        EspPing::default().ping(ip_info.subnet.gateway, &esp_idf_svc::ping::Configuration::default())?;
+
+        Ok(ip_info.ip)
+    }
+
     // pub fn connect(&self) -> Result<AsyncWifi<EspWifi<'static>>> {
     //     wifi(self.modem, self.sysloop.clone(), self.nvs.clone(), self.timer_service.clone())
     // }
@@ -193,52 +226,52 @@ impl WiFiManager<'_> {
 //     }
 // }
 
-pub fn wifi<'a>(
-    modem: impl WifiModemPeripheral + 'static,
-    sysloop: EspSystemEventLoop,
-    nvs: Option<EspNvsPartition<NvsDefault>>,
-    timer_service: EspTimerService<Task>,
-) -> Result<AsyncWifi<EspWifi<'static>>> {
-    use futures::executor::block_on;
+// pub fn wifi<'a>(
+//     modem: impl WifiModemPeripheral + 'static,
+//     sysloop: EspSystemEventLoop,
+//     nvs: Option<EspNvsPartition<NvsDefault>>,
+//     timer_service: EspTimerService<Task>,
+// ) -> Result<AsyncWifi<EspWifi<'static>>> {
+//     use futures::executor::block_on;
 
-    let mut wifi = AsyncWifi::wrap(
-        EspWifi::new(modem, sysloop.clone(), nvs)?,
-        sysloop,
-        timer_service.clone(),
-    )?;
+//     let mut wifi = AsyncWifi::wrap(
+//         EspWifi::new(modem, sysloop.clone(), nvs)?,
+//         sysloop,
+//         timer_service.clone(),
+//     )?;
 
-    block_on(connect_wifi(&mut wifi))?;
+//     block_on(connect_wifi(&mut wifi))?;
 
-    let ip_info = wifi.wifi().sta_netif().get_ip_info()?;
+//     let ip_info = wifi.wifi().sta_netif().get_ip_info()?;
 
-    println!("Wifi DHCP info: {:?}", ip_info);
+//     println!("Wifi DHCP info: {:?}", ip_info);
     
-    EspPing::default().ping(ip_info.subnet.gateway, &esp_idf_svc::ping::Configuration::default())?;
-    Ok(wifi)
+//     EspPing::default().ping(ip_info.subnet.gateway, &esp_idf_svc::ping::Configuration::default())?;
+//     Ok(wifi)
 
-}
+// }
 
-async fn connect_wifi(wifi: &mut AsyncWifi<EspWifi<'static>>) -> anyhow::Result<()> {
-    let wifi_configuration: embedded_svc::wifi::Configuration = embedded_svc::wifi::Configuration::Client(ClientConfiguration {
-        ssid: heapless::String::<32>::try_from(SSID).unwrap(),
-        bssid: None,
-        auth_method: embedded_svc::wifi::AuthMethod::WPA2Personal,
-        password: heapless::String::<64>::try_from(PASS).unwrap(),
-        channel: None,
-        scan_method: esp_idf_svc::wifi::ScanMethod::FastScan,
-        pmf_cfg: esp_idf_svc::wifi::PmfConfiguration::NotCapable,
-    });
+// async fn connect_wifi(wifi: &mut AsyncWifi<EspWifi<'static>>) -> anyhow::Result<()> {
+//     let wifi_configuration: embedded_svc::wifi::Configuration = embedded_svc::wifi::Configuration::Client(ClientConfiguration {
+//         ssid: heapless::String::<32>::try_from(SSID).unwrap(),
+//         bssid: None,
+//         auth_method: embedded_svc::wifi::AuthMethod::WPA2Personal,
+//         password: heapless::String::<64>::try_from(PASS).unwrap(),
+//         channel: None,
+//         scan_method: esp_idf_svc::wifi::ScanMethod::FastScan,
+//         pmf_cfg: esp_idf_svc::wifi::PmfConfiguration::NotCapable,
+//     });
 
-    wifi.set_configuration(&wifi_configuration)?;
+//     wifi.set_configuration(&wifi_configuration)?;
 
-    wifi.start().await?;
-    info!("Wifi started");
+//     wifi.start().await?;
+//     info!("Wifi started");
 
-    wifi.connect().await?;
-    info!("Wifi connected");
+//     wifi.connect().await?;
+//     info!("Wifi connected");
 
-    wifi.wait_netif_up().await?;
-    info!("Wifi netif up");
+//     wifi.wait_netif_up().await?;
+//     info!("Wifi netif up");
 
-    Ok(())
-}
+//     Ok(())
+// }
