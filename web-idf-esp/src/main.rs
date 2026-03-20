@@ -1,6 +1,6 @@
 use std::{net::{IpAddr, UdpSocket}, sync::{Arc, Mutex}, thread};
 
-use esp_idf_hal::gpio::PinDriver;
+use esp_idf_hal::{gpio::PinDriver, ledc::LedcDriver};
 use esp_idf_svc::{eventloop::EspSystemEventLoop, hal::peripherals::Peripherals, http::{Method, client::EspHttpConnection, server::EspHttpServer}, nvs::{EspDefaultNvsPartition, EspNvs}, timer::EspTaskTimerService};
 use log::info;
 use std::str::FromStr;
@@ -9,10 +9,11 @@ mod config;
 mod wifi;
 mod http;
 mod portal;
+mod led;
 
 use std::net::{ToSocketAddrs};
 
-use crate::{config::ConfigManager, http::HttpServerManager, wifi::WiFiManager};
+use crate::{config::ConfigManager, http::HttpServerManager, led::LedManager, wifi::WiFiManager};
 
 fn resolve_single(name: &str) -> anyhow::Result<IpAddr> {
     let addr = (name, 0)
@@ -84,9 +85,25 @@ fn run() -> anyhow::Result<()> {
 
     let mut wifi_manager = //wifi::wifi(peripherals.modem, sys_loop,Some(nvs_partition.clone()),timer_service)?;
         WiFiManager::new(peripherals.modem, sys_loop, nvs_partition.clone(),timer_service)?;
-    let led_pin = PinDriver::output(peripherals.pins.gpio16)?;
 
-    let led = Arc::new(Mutex::new(led_pin));
+    // let led_red_pin = PinDriver::output(peripherals.pins.gpio4)?;
+    // let led_green_pin = PinDriver::output(peripherals.pins.gpio16)?;
+    // let led_blue_pin = PinDriver::output(peripherals.pins.gpio17)?;
+
+    let led_manager = LedManager::new(peripherals.ledc.timer0, 
+        peripherals.ledc.channel0, peripherals.pins.gpio4, 
+        peripherals.ledc.channel1, peripherals.pins.gpio16,
+        peripherals.ledc.channel2, peripherals.pins.gpio17)?;
+    
+    led_manager.set_color(255, 255, 0)?;
+
+    // let led_timer: esp_idf_hal::ledc::TIMER0<'_> = peripherals.ledc.timer0;
+    // let led_timer_driver = esp_idf_hal::ledc::LedcTimerDriver::new(led_timer, &esp_idf_hal::ledc::config::TimerConfig::new().frequency(1000.Hz()))?;
+ 
+    // let led_channel_red = Arc::new(Mutex::new(LedcDriver::new(peripherals.ledc.channel0, &led_timer_driver, peripherals.pins.gpio4)?));
+    // let led_channel_green = Arc::new(Mutex::new(LedcDriver::new(peripherals.ledc.channel1, &led_timer_driver, peripherals.pins.gpio16)?));
+    // let led_channel_blue = Arc::new(Mutex::new(LedcDriver::new(peripherals.ledc.channel2, &led_timer_driver, peripherals.pins.gpio17)?));
+    // let led = Arc::new(Mutex::new(led_pin));
 
     let config_manager = ConfigManager::new(nvs_partition)?;
     let mut server_manager = HttpServerManager::new()?;
@@ -129,8 +146,18 @@ fn run() -> anyhow::Result<()> {
 
         let mut cnt = 0;
 
+        let mut r = 0;
+        let mut g = 255;
+        let mut b = 255;
         loop {
             log::info!("Top of loop");
+
+            led_manager.set_color(r,g,b)?;
+
+            let c = r;
+            r = b;
+            b = g;
+            g = c;
 
             if cnt < 3 {
                 let public_ip = get_public_ip_address()?;
