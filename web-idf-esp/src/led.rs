@@ -38,9 +38,9 @@ impl<'a> LedManager<'a> {
 
     pub fn set_color(&self, r: u8, g: u8, b: u8) -> anyhow::Result<()> {
         info!("Set led color r={} g={} b={}", r, g, b);
-        self.led_channel_red.lock().unwrap().set_duty(r as u32)?;
-        self.led_channel_green.lock().unwrap().set_duty(g as u32)?;
-        self.led_channel_blue.lock().unwrap().set_duty(b as u32)?;
+        self.led_channel_red.lock().unwrap().set_duty((255 - r) as u32)?;
+        self.led_channel_green.lock().unwrap().set_duty((255 - g) as u32)?;
+        self.led_channel_blue.lock().unwrap().set_duty((255 - b) as u32)?;
         Ok(())
     }
 }

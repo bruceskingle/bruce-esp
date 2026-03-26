@@ -6,8 +6,6 @@ use esp_idf_svc::wifi::AsyncWifi;
 use esp_idf_svc::wifi::AuthMethod;
 use esp_idf_svc::wifi::Configuration;
 use esp_idf_svc::wifi::EspWifi;
-use web_idf_esp::PASSWORD_LEN;
-use web_idf_esp::SSID_LEN;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 use log::info;
@@ -18,6 +16,9 @@ use esp_idf_svc::ping::EspPing;
 use esp_idf_svc::nvs::EspNvsPartition;
 use esp_idf_svc::nvs::NvsDefault;
 
+use crate::PASSWORD_LEN;
+use crate::SSID_LEN;
+use crate::config::CORE_FEATURE_NAME;
 use crate::config::ConfigManager;
 
 pub struct WiFiManager<'a> {
@@ -178,11 +179,12 @@ impl WiFiManager<'_> {
 
     pub async fn start_client(&mut self, config_manager: &Arc<ConfigManager>) -> anyhow::Result<std::net::Ipv4Addr> {
 
+        // let core_config = config_manager.features.get(CORE_FEATURE_NAME).unwrap();
         let wifi_configuration: embedded_svc::wifi::Configuration = embedded_svc::wifi::Configuration::Client(ClientConfiguration {
-            ssid: heapless::String::<32>::try_from(config_manager.get_valid_config(crate::config::SSID)?.as_str()).unwrap(),
+            ssid: heapless::String::<32>::try_from(config_manager.get_valid_core_config(crate::config::SSID)?.as_str()).unwrap(),
             bssid: None,
             auth_method: embedded_svc::wifi::AuthMethod::WPA2Personal,
-            password: heapless::String::<64>::try_from(config_manager.get_valid_config(crate::config::WIFI_PASSWORD)?.as_str()).unwrap(),
+            password: heapless::String::<64>::try_from(config_manager.get_valid_core_config(crate::config::WIFI_PASSWORD)?.as_str()).unwrap(),
             channel: None,
             scan_method: esp_idf_svc::wifi::ScanMethod::FastScan,
             pmf_cfg: esp_idf_svc::wifi::PmfConfiguration::NotCapable,
@@ -193,8 +195,26 @@ impl WiFiManager<'_> {
         self.wifi.start().await?;
         info!("Wifi started");
 
-        self.wifi.connect().await?;
-        info!("Wifi connected");
+        let mut retry_cnt = 4;
+        while retry_cnt > 0 {
+            match self.wifi.connect().await {
+                Ok(_) => {
+                    info!("Wifi connected");
+                    break;
+                },
+                Err(error) => {
+                    log::error!("Failed to connect to WiFi: {}", error);
+                    retry_cnt -= 1;
+                    if retry_cnt == 0 {
+                        log::error!("Failed to connect to WiFi after multiple attempts");
+                        return Err(error.into());
+                    }
+                    info!("Failed to connect to Wifi {} attempts remaining...", retry_cnt);
+                    std::thread::sleep(std::time::Duration::from_secs(5));
+                },
+            }
+            
+        }
 
         self.wifi.wait_netif_up().await?;
         info!("Wifi netif up");

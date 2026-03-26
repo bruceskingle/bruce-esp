@@ -5,16 +5,39 @@ use indexmap::IndexMap;
 use log::info;
 use serde::{Serialize, Deserialize};
 use url::form_urlencoded;
-use web_idf_esp::{PASSWORD_LEN, SSID_LEN};
+use crate::{FQDN_LEN, Feature, HOSTNAME_LEN, PASSWORD_LEN, SSID_LEN};
 use std::{sync::{Arc, Mutex}};
 
 use anyhow::anyhow;
+
+pub enum EnabledState {
+    Enabled,
+    Disabled,
+    Required,
+}
+
+impl EnabledState {
+    pub fn is_enabled(&self) -> bool {
+        matches!(self, EnabledState::Enabled | EnabledState::Required)
+    }
+}
+
+impl From<bool> for EnabledState {
+    fn from(value: bool) -> Self {
+        if value {
+            EnabledState::Enabled
+        } else {
+            EnabledState::Disabled
+        }
+    }
+}
 
 #[derive(Debug)]
 pub enum TypedValue {
     String(usize, Option<String>),
     Int32(Option<i32>),
-    Int64(Option<i64>)
+    Int64(Option<i64>),
+    Bool(bool),
 }
 
 impl TypedValue {
@@ -28,6 +51,7 @@ impl TypedValue {
             },
             TypedValue::Int32(_) => matches!(other, TypedValue::Int32(_)),
             TypedValue::Int64(_) => matches!(other, TypedValue::Int64(_) ),
+            TypedValue::Bool(_) => matches!(other, TypedValue::Bool(_)),
         }
     }
 
@@ -36,6 +60,7 @@ impl TypedValue {
             TypedValue::String(_len, val) => val.is_none(),
             TypedValue::Int32(val) => val.is_none(),
             TypedValue::Int64(val) => val.is_none(),
+            TypedValue::Bool(_) => false, // Bool is never None, it defaults to false
         }
     }
     
@@ -45,11 +70,11 @@ impl TypedValue {
             TypedValue::String(len, _) => {
                 let mut buf = vec![0u8; *len as usize];
 
-                let x = nvs.get_str(name, buf.as_mut_slice());
-                match x {
-                    Ok(str) => log::info!("Read string value for {} from NVS: {:?}", name, str),
-                    Err(e) => log::info!("No string value for {} in NVS: {:?}", name, e),
-                }
+                // let x = nvs.get_str(name, buf.as_mut_slice());
+                // match x {
+                //     Ok(str) => log::info!("Read string value for {} from NVS: {:?}", name, str),
+                //     Err(e) => log::info!("No string value for {} in NVS: {:?}", name, e),
+                // }
 
                 if let Some(str)= nvs.get_str(name, buf.as_mut_slice()).ok().flatten() {
                     TypedValue::String(*len, Some(str.to_string()))
@@ -59,6 +84,14 @@ impl TypedValue {
             },
             TypedValue::Int32(_) => TypedValue::Int32(nvs.get_i32(name).ok().flatten()),
             TypedValue::Int64(_) => TypedValue::Int64(nvs.get_i64(name).ok().flatten()),
+            TypedValue::Bool(_) => {
+                let v = if let Some(value) = nvs.get_u8(name).ok().flatten() {
+                    value != 0
+                } else {
+                    false
+                };
+                TypedValue::Bool(v)
+            },  
         };
         info!("Finished reading config value {} from NVS: {:?}", name, result);
         result
@@ -69,6 +102,7 @@ impl TypedValue {
             TypedValue::String(_len, Some(val)) => val.clone(),
             TypedValue::Int32(Some(val)) => val.to_string(),
             TypedValue::Int64(Some(val)) => val.to_string(),
+            TypedValue::Bool(val) => val.to_string(),
             _ => "".to_string(),
         }
     }
@@ -78,6 +112,7 @@ impl TypedValue {
             TypedValue::String(len, val) => TypedValue::String(*len, None),
             TypedValue::Int32(val) => TypedValue::Int32(None),
             TypedValue::Int64(val) => TypedValue::Int64(None),
+            TypedValue::Bool(val) => TypedValue::Bool(false),
         }
     }
     
@@ -95,6 +130,7 @@ impl TypedValue {
             },
             TypedValue::Int32(_) => TypedValue::Int32(Some(str_val.parse::<i32>()?)),
             TypedValue::Int64(_) => TypedValue::Int64(Some(str_val.parse::<i64>()?)),
+            TypedValue::Bool(_) => TypedValue::Bool(str_val.parse::<bool>()?),
         })
     }
 }
@@ -102,8 +138,8 @@ impl TypedValue {
 
 #[derive(Debug)]
 pub struct ConfigValue {
-    value: TypedValue,
-    required: bool,
+    pub value: TypedValue,
+    pub required: bool,
 }
 
 impl ConfigValue {
@@ -114,7 +150,278 @@ impl ConfigValue {
 }
 
 
-type DeviceConfig = IndexMap<String, ConfigValue>;
+#[derive(Debug)]
+pub struct Config {
+    map: IndexMap<String, ConfigValue>,
+}
+
+impl Config {
+    pub fn new() -> Self {
+        Self { map: IndexMap::new() }
+    }
+
+    pub fn insert(&mut self, name: String, value: ConfigValue) -> anyhow::Result<()> {
+        if self.map.contains_key(&name) {
+            anyhow::bail!("Duplicate config name: {}", name);
+        }
+
+        if name.len() > 15{
+            anyhow::bail!("Config name \"{}\" is too long: max length is 15", name);
+        }
+
+        if name.starts_with("_") {
+            anyhow::bail!("Config name \"{}\" is invalid: cannot start with _", name);
+        }   
+        
+        self.map.insert(name, value);
+        Ok(())
+    }
+
+    pub fn is_valid(&self, config_name: &str) -> bool {
+        for (name, config_value) in &self.map {
+            if config_value.required && config_value.value.is_none() {
+                log::error!("Missing required config value: {} in {}", name, config_name);
+                return false;
+            }
+        }
+        true
+    }
+}
+
+/// This is the descriptor for a feature which it uses to describe itself. 
+#[derive(Debug)]
+pub struct FeatureDescriptor {
+    pub name: String,
+    pub config: Config,
+}
+///
+
+// #[derive(Debug)]
+pub struct FeatureConfig {
+    pub name: String,
+    pub enabled: EnabledState,
+    pub config: Config,
+    nvs_namespace: EspNvs<NvsDefault>,
+}
+
+impl FeatureConfig {
+    pub fn from_descriptor(feature_descriptor: FeatureDescriptor, nvs_partition: EspNvsPartition<NvsDefault>, feature_namespace: &EspNvs<NvsDefault>) -> anyhow::Result<Self> {
+        let enabled = if let Some(value) = feature_namespace.get_u8(&feature_descriptor.name).ok().flatten() {
+            info!("Read feature enabled value for {} from NVS: {}", feature_descriptor.name, value);
+            value != 0
+        } else {
+            info!("Read feature enabled value for {} from NVS: None", feature_descriptor.name);
+            false
+        };
+
+        info!("feature.enabled for {}: {}", feature_descriptor.name, enabled);
+        Self::new(feature_descriptor.name, EnabledState::from(enabled), feature_descriptor.config, nvs_partition)
+    }
+
+    pub fn new(name: String, enabled: EnabledState, mut config: Config, nvs_partition: EspNvsPartition<NvsDefault>) -> anyhow::Result<Self> {
+
+        let nvs_namespace = EspNvs::new(nvs_partition, &name, true)?;
+
+        {
+            info!("Iterating over feature {} NVS items for debugging:", &name);
+            let mut keys = nvs_namespace.keys(None).unwrap();
+
+            loop {
+                match keys.next_key() {
+                    Some((key, data_type)) => log::info!("NVS item: {} of type {:?}", key, data_type),
+                    None => break,
+                }
+            }
+        }
+
+        info!("Loading feature {} config from NVS", &name);
+        for (name, config_value) in config.map.iter_mut() {
+            // let value = TypedValue::read_from_nvs(&self.nvs, name);
+            config_value.read_from_nvs(&nvs_namespace, name);
+        }
+        info!("Finished loading config: {:?}", config);
+
+
+
+
+        Ok(Self {
+            name,
+            enabled,
+            config,
+            nvs_namespace,
+        })
+    }
+
+    pub fn is_valid(&self) -> bool {
+        if self.enabled.is_enabled() {
+            for (name, config_value) in &self.config.map {
+                if config_value.required && config_value.value.is_none() {
+                    log::error!("Missing required config value: {} in feature {}", name, self.name);
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    fn create_config_page(&self, resp: &mut esp_idf_svc::http::server::Response<&mut EspHttpConnection<'_>>) -> anyhow::Result<()> {
+        info!("Creating config page for feature: {}", &self.name);
+        let feature_name = &self.name;
+        if let EnabledState::Required = self.enabled {
+            // Required features are always enabled, so we just show the config page without a checkbox
+        }
+        else {
+            info!("feature.enabled for {}: {}", &self.name, self.enabled.is_enabled());
+
+            let name = format!("feature_{}", &self.name);
+            let checked = if self.enabled.is_enabled() {
+                " checked"
+            } else {
+                ""
+            };
+
+            resp.write(format!(r#"
+                        <label for="{name}">{name}</label>
+                        <input id="{name}" name="{name}" type="checkbox"{checked}>
+                        <h2>{feature_name}</h2>
+            "#).as_bytes())?;
+        }
+
+        for (name, config_value) in &self.config.map {
+            let input_type_buf: String;
+            let input_type = match config_value.value {
+                TypedValue::String(len, _) => {
+                    input_type_buf = format!("text\" maxlength=\"{}", len);
+                    &input_type_buf
+                },
+                TypedValue::Int32(_) | TypedValue::Int64(_) => "number",
+                TypedValue::Bool(_) => "checkbox",
+            };
+            let value = config_value.value.to_string();
+            resp.write(format!(r#"
+                        <label for="{name}">{name}</label>
+                        <input id="{name}" name="{name}" type="{input_type}" autocomplete="off" value="{value}">
+            "#).as_bytes())?;
+        }
+
+        Ok(())
+    }
+
+    pub fn handle_config_form(&mut self, form: &IndexMap<String, String>, feature_namespace: &EspNvs<NvsDefault>) -> anyhow::Result<()> {
+        info!("Handling config form for feature: {}", self.name);
+        if let EnabledState::Required = self.enabled {
+            // Required features are always enabled, so we just show the config page without a checkbox
+        }
+        else {
+            let name = format!("feature_{}", &self.name);
+            let str_val = form.get(&name).map(|s| s.as_str()).unwrap_or("").trim();
+            let enabled = str_val == "on";
+            info!("Feature {} enabled value from form: {} -> enabled={}", &self.name, str_val, enabled);
+                feature_namespace.set_u8(&self.name, if enabled { 1 } else { 0 })?;
+        }
+
+        for (name, config_value) in self.config.map.iter_mut() {
+            // let name_buf: String;
+            // let name = if let Some(feature_name) = opt_feature_name {
+            //     name_buf = format!("{}_{}", feature_name, cname);
+            //     &name_buf
+            // } else {
+            //     &cname
+            // };
+
+            info!("Processing config value: {}", name);
+            let str_val = form.get(name).map(|s| s.as_str()).unwrap_or("").trim();
+            if str_val.len() == 0 {
+                if config_value.required {
+                    log::error!("Missing required config value: {}", name);
+                }
+                else {
+                    log::info!("Config value {} is None", name);
+                    if ! config_value.value.is_none() {
+                        log::info!("Setting optional config value {} to None", name);
+                        config_value.value = config_value.value.to_none();
+                        self.nvs_namespace.remove(name)?;
+                    }
+                }
+            }
+            else {
+                log::info!("Config value {} is {}", name, str_val);
+                match config_value.value.from_str(str_val) {
+                    Ok(new_value) => {
+                        config_value.value = new_value;
+                        // Save to NVS
+                        log::info!("Save to NVS Config value {} is {}", name, str_val);
+                        match &config_value.value {
+                            TypedValue::String(_len, Some(val)) => {
+                                info!("Saving string value for {} to NVS: {}", name, val);
+                                self.nvs_namespace.set_str(name, val)?
+                            },
+                            TypedValue::Int32(Some(val)) => {
+                                info!("Saving int32 value for {} to NVS: {}", name, val);
+                                self.nvs_namespace.set_i32(name, *val)?
+                            },
+                            TypedValue::Int64(Some(val)) => {
+                                info!("Saving int64 value for {} to NVS: {}", name, val);
+                                self.nvs_namespace.set_i64(name, *val)?
+                            },
+                            TypedValue::Bool(val) => {
+                                info!("Saving bool value for {} to NVS: {}", name, val);
+                                self.nvs_namespace.set_u8(name, if *val { 1 } else { 0 })?
+                            },
+                            _ => anyhow::bail!("Invalid config value for {}: {:?}", name, config_value.value),
+                        };
+                    }
+                    Err(e) => {
+                        anyhow::bail!("Failed to parse config value for {}: {}", name, e);
+                    }
+                }
+            }
+        }
+
+        info!("Finished handling form config: {:?}", &self.config);
+
+        info!("Iterating over NVS items for debugging:");
+        let mut keys = self.nvs_namespace.keys(None).unwrap();
+
+        loop {
+            match keys.next_key() {
+                Some((key, data_type)) => log::info!("NVS item: {} of type {:?}", key, data_type),
+                None => break,
+            }
+        }
+
+        Ok(())
+    }
+}
+
+
+// #[derive(Debug)]
+// pub struct SystemConfig {
+//     pub feature_config: IndexMap<String, FeatureConfig>,
+// }
+
+// impl SystemConfig {
+//     pub fn is_valid(&self) -> bool {
+//         // if ! &self.core_config.is_valid("core_config") {
+//         //     return false;
+//         // }
+        
+//         for (feature_name, feature_config) in &self.feature_config {
+//             if feature_config.enabled {
+//                 if ! &feature_config.config.is_valid(&format!("feature_config for {}", feature_name)) {
+//                     return false;
+//                 }
+//             }
+//         }
+//         info!("SystemConfig is valid");
+//         true
+//     }
+
+//     pub fn get_config<'a>(&'a self, feature_name: &str) -> anyhow::Result<&'a FeatureConfig> {
+//         self.feature_config.get(feature_name)
+//             .ok_or_else(|| anyhow::anyhow!("Unknown Feature '{}'", feature_name))
+//     }
+// }
 
 // #[derive(Serialize, Deserialize, Debug)]
 // pub struct DeviceConfig {
@@ -140,18 +447,57 @@ use esp_idf_svc::nvs::*;
 use crate::http::HttpServerManager;
 
 pub struct ConfigManager {
-    config_impl: Mutex<ConfigManagerImpl>,
+    // config_impl: Mutex<ConfigManagerImpl>,
+    pub features: IndexMap<String, Mutex<FeatureConfig>>,
+    feature_namespace: EspNvs<NvsDefault>,
 }
 
 impl ConfigManager {
-    pub fn new(nvs_partition: EspNvsPartition<NvsDefault>) -> anyhow::Result<Arc<ConfigManager>> {
+    pub fn new(nvs_partition: EspNvsPartition<NvsDefault>, p_features: &Vec::<Box<dyn Feature>>) -> anyhow::Result<Arc<ConfigManager>> {
+        let mut features: IndexMap<String, Mutex<FeatureConfig>> = IndexMap::new();
+        let feature_namespace = EspNvs::new(nvs_partition.clone(), FEATURE_NAMESPACE_NAME, true)?;
+
+        let mut core_config = Config::new();
+
+        core_config.insert(SSID.to_string(), ConfigValue { value: TypedValue::String(SSID_LEN, None), required: true })?;
+        core_config.insert(WIFI_PASSWORD.to_string(), ConfigValue { value: TypedValue::String(PASSWORD_LEN, None), required: true })?;
+        core_config.insert(MDNS_HOSTNAME.to_string(), ConfigValue { value: TypedValue::String(HOSTNAME_LEN, None), required: true })?;
+
+        // let core_namespace = EspNvs::new(nvs_partition, "core", true)?;
+        let core_feature_config = FeatureConfig::new(
+            CORE_FEATURE_NAME.to_string(),
+            EnabledState::Required,
+            core_config,
+            nvs_partition.clone())?;
+        
+        features.insert(CORE_FEATURE_NAME.to_string(), Mutex::new(core_feature_config));
+        
+        for feature in p_features {
+            let descriptor = feature.create_descriptor()?;
+            for reserved_name in RESERVED_FEATURE_NAMES.iter() {
+                if descriptor.name == *reserved_name {
+                    return Err(anyhow::anyhow!("Feature name '{}' is reserved and cannot be used", descriptor.name));
+                }
+            }
+            let feature_config = FeatureConfig::from_descriptor(descriptor, nvs_partition.clone(), &feature_namespace)?;
+            features.insert(feature_config.name.clone(), Mutex::new(feature_config));
+        }
+        
+        
+
         Ok(Arc::new(ConfigManager {
-            config_impl: Mutex::new(ConfigManagerImpl::new(nvs_partition)?),
+            // config_impl: Mutex::new(ConfigManagerImpl::new(nvs_partition, features)?),
+            features,
+            feature_namespace,
         }))
     }
 
-    pub fn get_valid_config<'a>(&'a self, key: &str) -> anyhow::Result<String> {
-        if let Some(value) = self.config_impl.lock().unwrap().device_config.get(key) {
+    // pub fn get_config<'a>(&'a self, feature_name: &str) -> anyhow::Result<&'a FeatureConfig> {
+    //     self.config_impl.lock().unwrap().system_config.get_config(feature_name)
+    // }
+
+    pub fn get_valid_core_config(&self, key: &str) -> anyhow::Result<String> {
+        if let Some(value) = self.features.get(CORE_FEATURE_NAME).unwrap().lock().unwrap().config.map.get(key) {
             Ok(value.value.to_string())
         }
         else {
@@ -159,9 +505,30 @@ impl ConfigManager {
         }
     }
 
-    pub fn is_config_valid(&self) -> bool {
-        self.config_impl.lock().unwrap().is_config_valid()
+    // pub fn is_config_valid(&self) -> bool {
+    //     self.config_impl.lock().unwrap().is_core_config_valid()
+    // }
+
+    pub fn is_valid(&self) -> bool {
+        for (_feature_name, feature_config_mutex) in &self.features {
+            let feature_config = feature_config_mutex.lock().unwrap();
+            if ! feature_config.is_valid() {
+                return false;
+            }
+        }
+        info!("ConfigManager is valid");
+        true
     }
+
+    pub fn is_core_config_valid(&self) -> bool {
+        if let Some(core_feature_mutex) = self.features.get(CORE_FEATURE_NAME) {
+            let core_feature = core_feature_mutex.lock().unwrap();
+            return core_feature.is_valid();
+        }
+        false
+    }
+
+    // fn create_config_Page
 
     pub fn create_pages(config_manager: &Arc<Self>, server_manager: &mut HttpServerManager<'_>) -> anyhow::Result<()> {
 
@@ -203,23 +570,12 @@ impl ConfigManager {
                     <div class="page">
                         <h1>ESP32 Setup</h1>
                         <form method="POST" action="/update_config">"#.as_bytes())?;
-
-
-            for (name, config_value) in &config_manager_clone.config_impl.lock().unwrap().device_config {
-                let input_type_buf: String;
-                let input_type = match config_value.value {
-                    TypedValue::String(len, _) => {
-                        input_type_buf = format!("text\" maxlength=\"{}", len);
-                        &input_type_buf
-                    },
-                    TypedValue::Int32(_) | TypedValue::Int64(_) => "number",
-                };
-                let value = config_value.value.to_string();
-                resp.write(format!(r#"
-                            <label for="{name}">{name}</label>
-                            <input id="{name}" name="{name}" type="{input_type}" autocomplete="off" required value="{value}">
-                "#).as_bytes())?;
+            for (feature_name, feature_config_mutex) in &config_manager_clone.features {
+                let feature_config = feature_config_mutex.lock().unwrap();
+                feature_config.create_config_page(&mut resp)?;
             }
+
+            
             resp.write(format!(r#"<button type="submit">Save</button>
                         </form>
                     </div>
@@ -255,7 +611,7 @@ impl ConfigManager {
             // let cm = config_manager_clone.config_impl.lock().unwrap().device_config.iter_mut();
             // let mut device_config = cm.device_config;
 
-            config_manager_clone.config_impl.lock().unwrap().handle_config_form(form);
+            config_manager_clone.handle_config_form(&form)?;
             // let mut unlocked_config_manager = config_manager_clone.config_impl.lock().unwrap();
             // let nvs = &unlocked_config_manager.nvs;
 
@@ -284,7 +640,7 @@ impl ConfigManager {
             //         }
             //     }
             // }
-
+ 
 
             let mut resp = req.into_ok_response()?;
             resp.write(b"Saved!. Rebooting...(NOT)")?;
@@ -300,7 +656,7 @@ impl ConfigManager {
         let config_manager_clone = config_manager.clone();
         server_manager.fn_handler("/generate_204", Method::Get, move |req| {
 
-            let ok = config_manager_clone.config_impl.lock().unwrap().is_config_valid();
+            let ok = config_manager_clone.is_core_config_valid();
 
             // info!("Received request for /hotspot-detect.html from {}", req.connection().remote_addr());
 
@@ -320,7 +676,7 @@ impl ConfigManager {
         let config_manager_clone = config_manager.clone();
         server_manager.fn_handler("/hotspot-detect.html", Method::Get, move |req| {
 
-            let ok = config_manager_clone.config_impl.lock().unwrap().is_config_valid();
+            let ok = config_manager_clone.is_core_config_valid();
 
             // info!("Received request for /hotspot-detect.html from {}", req.connection().remote_addr());
 
@@ -346,7 +702,7 @@ impl ConfigManager {
         let config_manager_clone = config_manager.clone();
         server_manager.fn_handler("/connecttest.txt", Method::Get, move |req| {
 
-            let ok = config_manager_clone.config_impl.lock().unwrap().is_config_valid();
+            let ok = config_manager_clone.is_core_config_valid();
 
             // info!("Received request for /hotspot-detect.html from {}", req.connection().remote_addr());
 
@@ -362,6 +718,19 @@ impl ConfigManager {
             Ok(())
         })?;
 
+        Ok(())
+    }
+
+    pub fn handle_config_form(&self, form: &IndexMap<String, String>) -> anyhow::Result<()> {
+        info!("Handling config form submission: {:?}", form);
+
+        // Self::handle_config_form_feature(&mut self.nvs, form, None, &mut self.system_config.core_config)?;
+
+        for (_feature_name, feature_config) in &self.features {
+            feature_config.lock().unwrap().handle_config_form(form, &self.feature_namespace)?;
+        }
+
+        // info!("Finished handling config form submission current config: {:?}", self.system_config);
         Ok(())
     }
 
@@ -386,39 +755,84 @@ impl ConfigManager {
     // }
 }
 
-struct ConfigManagerImpl {
-    nvs: EspNvs<NvsDefault>,
-    device_config: DeviceConfig,
-}
+
+
+// struct ConfigManagerImpl {
+//     nvs: EspNvs<NvsDefault>,
+//     system_config: SystemConfig,
+// }
+
+pub const CORE_FEATURE_NAME: &str = "core";
+const FEATURE_NAMESPACE_NAME: &str = "feature";
+const RESERVED_FEATURE_NAMES: [&str; 6] = [
+    CORE_FEATURE_NAME,
+    FEATURE_NAMESPACE_NAME,
+    "wifi",
+    "phy",
+    "bt_config",
+    "nvs.net80211",
+];
 
 pub const SSID: &str = "ssid";
 pub const WIFI_PASSWORD: &str = "wifi_password";
 pub const MDNS_HOSTNAME: &str = "mdns_hostname";
 
-impl ConfigManagerImpl {
-    pub fn new(nvs_partition: EspNvsPartition<NvsDefault>) -> anyhow::Result<Self> {
-        let mut device_config = IndexMap::new();
+// impl ConfigManagerImpl {
+    // pub fn new(nvs_partition: EspNvsPartition<NvsDefault>, features: &Vec::<Box<dyn Feature>>) -> anyhow::Result<Self> {
+    //     let mut core_config = Config::new();
 
-        device_config.insert(SSID.to_string(), ConfigValue { value: TypedValue::String(SSID_LEN, None), required: true });
-        device_config.insert(WIFI_PASSWORD.to_string(), ConfigValue { value: TypedValue::String(PASSWORD_LEN, None), required: true });
-        device_config.insert(MDNS_HOSTNAME.to_string(), ConfigValue { value: TypedValue::String(web_idf_esp::HOSTNAME_LEN, None), required: true });
+    //     core_config.insert(SSID.to_string(), ConfigValue { value: TypedValue::String(SSID_LEN, None), required: true })?;
+    //     core_config.insert(WIFI_PASSWORD.to_string(), ConfigValue { value: TypedValue::String(PASSWORD_LEN, None), required: true })?;
+    //     core_config.insert(MDNS_HOSTNAME.to_string(), ConfigValue { value: TypedValue::String(HOSTNAME_LEN, None), required: true })?;
 
-        let nvs= EspNvs::new(nvs_partition, "config", true)?;
+    //     let mut feature_config: IndexMap<String, FeatureConfig> = IndexMap::new();
 
-        let mut bare_config_manager = Self {
-            nvs,
-            device_config,
-        };
+    //     feature_config.insert(CORE_FEATURE_NAME.to_string(), FeatureConfig {
+    //         name: CORE_FEATURE_NAME.to_string(),
+    //         enabled: true,
+    //         config: core_config,
+    //      });
 
-        bare_config_manager.load_config();
-        // let config_manager = Arc::new(Mutex::new(bare_config_manager));
+    //     for feature in features {
+    //         let fc = feature.create_descriptor()?;
+    //         if feature_config.contains_key(&fc.name) {
+    //             anyhow::bail!("Duplicate feature name: {}", fc.name);
+    //         }
+
+    //         for reserved_name in RESERVED_FEATURE_NAMES.iter() {
+    //             if fc.name == *reserved_name {
+    //                 return Err(anyhow::anyhow!("Feature name '{}' is reserved and cannot be used", fc.name));
+    //             }
+    //         }
+
+    //         feature_config.insert(fc.name.clone(), FeatureConfig {
+    //             name: fc.name,
+    //             enabled: false,
+    //             config: fc.config,
+    //          });
+    //     }
+    //     let nvs= EspNvs::new(nvs_partition, "config", true)?;
+
+    //     let mut bare_config_manager = Self {
+    //         nvs,
+    //         system_config: SystemConfig {
+    //             feature_config,
+    //         }
+    //     };
+
+    //     bare_config_manager.load_config();
+    //     // let config_manager = Arc::new(Mutex::new(bare_config_manager));
 
 
-        Ok(bare_config_manager)
-    }
+    //     Ok(bare_config_manager)
+    // }
 
-    pub fn is_config_valid(&self) -> bool {
-        for (name, config_value) in &self.device_config {
+    
+/*
+    
+
+    pub fn is_core_config_valid(&self) -> bool {
+        for (name, config_value) in &self.system_config.core_config.map {
             if config_value.required && config_value.value.is_none() {
                 log::error!("Missing required config value: {}", name);
                 return false;
@@ -440,50 +854,31 @@ impl ConfigManagerImpl {
         }
 
         info!("Loading config from NVS");
-        for (name, config_value) in self.device_config.iter_mut() {
+        for (name, config_value) in self.system_config.core_config.map.iter_mut() {
             // let value = TypedValue::read_from_nvs(&self.nvs, name);
             config_value.read_from_nvs(&self.nvs, name);
         }
-        info!("Finished loading config: {:?}", self.device_config);
-    }
+        for (feature_name, feature_config) in self.system_config.feature_config.iter_mut() {
 
-    pub fn handle_config_form(&mut self, form: IndexMap<String, String>) {
-        info!("Handling config form submission: {:?}", form);
-        for (name, config_value) in self.device_config.iter_mut() {
-            info!("Processing config value: {}", name);
-            let str_val = form.get(name).map(|s| s.as_str()).unwrap_or("").trim();
-            if str_val.len() == 0 {
-                if config_value.required {
-                    log::error!("Missing required config value: {}", name);
-                }
-                else {
-                    log::info!("Config value {} is None", name);
-                    if ! config_value.value.is_none() {
-                        log::info!("Setting optional config value {} to None", name);
-                        config_value.value = config_value.value.to_none();
-                        self.nvs.remove(name).ok();
-                    }
-                }
-            }
-            else {
-                log::info!("Config value {} is {}", name, str_val);
-                match config_value.value.from_str(str_val) {
-                    Ok(new_value) => {
-                        config_value.value = new_value;
-                        // Save to NVS
-                        match &config_value.value {
-                            TypedValue::String(_len, Some(val)) => self.nvs.set_str(name, val).ok(),
-                            TypedValue::Int32(Some(val)) => self.nvs.set_i32(name, *val).ok(),
-                            TypedValue::Int64(Some(val)) => self.nvs.set_i64(name, *val).ok(),
-                            _ => None,
-                        };
-                    }
-                    Err(e) => {
-                        log::error!("Failed to parse config value for {}: {}", name, e);
-                    }
-                }
+            info!("Loading config for feature: {}", feature_name);
+            let name = format!("feature_{}", feature_name);
+
+            feature_config.enabled = if let Some(value) = self.nvs.get_u8(&name).ok().flatten() {
+                info!("Read feature enabled value for {} from NVS: {}", feature_name, value);
+                value != 0
+            } else {
+                info!("Read feature enabled value for {} from NVS: None", feature_name);
+                false
+            };
+
+            info!("feature.enabled for {}: {}", feature_name, feature_config.enabled);
+
+            for (name, config_value) in feature_config.config.map.iter_mut() {
+                let qualified_name = format!("{}_{}", feature_name, name);
+                config_value.read_from_nvs(&self.nvs, &qualified_name);
             }
         }
-        info!("Finished handling config form submission");
+        info!("Finished loading config: {:?}", self.system_config);
     }
 }
+**/
