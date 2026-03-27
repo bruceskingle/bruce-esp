@@ -6,6 +6,8 @@ use esp_idf_svc::wifi::AsyncWifi;
 use esp_idf_svc::wifi::AuthMethod;
 use esp_idf_svc::wifi::Configuration;
 use esp_idf_svc::wifi::EspWifi;
+use esp_idf_svc::wifi::ScanMethod;
+use esp_idf_svc::wifi::ScanSortMethod;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 use log::info;
@@ -22,26 +24,23 @@ use crate::config::CORE_FEATURE_NAME;
 use crate::config::ConfigManager;
 
 pub struct WiFiManager<'a> {
-    wifi: AsyncWifi<EspWifi<'a>>,
+    wifi: EspWifi<'a>,
 }
 
 impl WiFiManager<'_> {
     pub fn new(
         modem: impl WifiModemPeripheral + 'static,
-        sysloop: EspSystemEventLoop,
+        sys_loop: EspSystemEventLoop,
         nvs: EspNvsPartition<NvsDefault>,
-        timer_service: EspTimerService<Task>,
     ) -> anyhow::Result<Self> {
+        let esp_wifi = EspWifi::new(modem, sys_loop.clone(), Some(nvs))?;
+
         Ok(Self {
-            wifi: AsyncWifi::wrap(
-                EspWifi::new(modem, sysloop.clone(), Some(nvs))?,
-                sysloop,
-                timer_service.clone(),
-            )?
+            wifi: esp_wifi,
         })
     }
 
-    pub async fn start_access_point(&mut self) -> anyhow::Result<std::net::Ipv4Addr> {
+    pub fn start_access_point(&mut self) -> anyhow::Result<std::net::Ipv4Addr> {
         
 
         let ap_config = AccessPointConfiguration {
@@ -59,11 +58,11 @@ impl WiFiManager<'_> {
 
         // self.wifi.start().await?;
 
-        let ip_info = self.wifi.wifi().ap_netif().get_ip_info()?;
+        let ip_info = self.wifi.ap_netif().get_ip_info()?;
         info!("WiFi Access Point IP Info: {:?}", ip_info);
 
         // Start the AP first, then update the DHCP server DNS option.
-        self.wifi.start().await?;
+        self.wifi.start()?;
 
         // Desired DNS server for clients.
         let dns_server = ip_info.ip; //Ipv4Addr::new(1, 1, 1, 1);
@@ -80,7 +79,7 @@ impl WiFiManager<'_> {
         };
 
         unsafe {
-            let netif = self.wifi.wifi().ap_netif();
+            let netif = self.wifi.ap_netif();
             let handle = netif.handle();
 
             let res_stop = esp_idf_sys::esp_netif_dhcps_stop(handle);
@@ -134,70 +133,32 @@ impl WiFiManager<'_> {
             }
         }
 
-        let ip_info = self.wifi.wifi().ap_netif().get_ip_info()?;
+        let ip_info = self.wifi.ap_netif().get_ip_info()?;
         info!("WiFi Access Point IP Info after dns config: {:?}", ip_info);
-// let mut dns = dns_info_from_ipv4(ip_info.ip);
-
-//         unsafe {
-
-// //             use esp_idf_svc::ipv4::Ipv4AddrExt;
-
-// //             let mut dns_info = esp_netif_dns_info_t {
-// //                 ip: ip_info.ip.into(),
-// // };
-
-
-//             // use esp_idf_sys::*;
-//             // use esp_idf_svc::handle::RawHandle;
-
-//             // let netif = self.wifi.wifi().ap_netif();
-
-//             // esp_netif_dhcps_stop(netif.handle());
-
-//             // let octets = ip_info.ip.octets();
-//             // let addr = u32::from_be_bytes(octets);
-
-
-//             // let mut dns_info = esp_netif_dns_info_t {
-//             //     ip: esp_ip_addr_t {
-//             //         type_: esp_ip_addr_type_t_ESP_IPADDR_TYPE_V4,
-//             //         u_addr: esp_ip_addr__bindgen_ty_1 {
-//             //             ip4: esp_ip4_addr_t { addr },
-//             //         },
-//             //     },
-//             // };
-
-//             esp_idf_sys::esp_netif_set_dns_info(
-//                 netif.handle(),
-//                 esp_idf_sys::esp_netif_dns_type_t::ESP_NETIF_DNS_MAIN,
-//                 dns_info,
-//             );
-//         }
 
         Ok(ip_info.ip)
     }
 
-    pub async fn start_client(&mut self, config_manager: &Arc<ConfigManager>) -> anyhow::Result<std::net::Ipv4Addr> {
-
-        // let core_config = config_manager.features.get(CORE_FEATURE_NAME).unwrap();
+    pub fn start_client(&mut self, config_manager: &Arc<ConfigManager>) -> anyhow::Result<std::net::Ipv4Addr> {
         let wifi_configuration: embedded_svc::wifi::Configuration = embedded_svc::wifi::Configuration::Client(ClientConfiguration {
             ssid: heapless::String::<32>::try_from(config_manager.get_valid_core_config(crate::config::SSID)?.as_str()).unwrap(),
             bssid: None,
             auth_method: embedded_svc::wifi::AuthMethod::WPA2Personal,
             password: heapless::String::<64>::try_from(config_manager.get_valid_core_config(crate::config::WIFI_PASSWORD)?.as_str()).unwrap(),
             channel: None,
-            scan_method: esp_idf_svc::wifi::ScanMethod::FastScan,
+            scan_method: ScanMethod::CompleteScan(ScanSortMethod::Security),
             pmf_cfg: esp_idf_svc::wifi::PmfConfiguration::NotCapable,
         });
 
+
         self.wifi.set_configuration(&wifi_configuration)?;
 
-        self.wifi.start().await?;
+        self.wifi.start()?;
         info!("Wifi started");
 
         let mut retry_cnt = 4;
         while retry_cnt > 0 {
-            match self.wifi.connect().await {
+            match self.wifi.connect() {
                 Ok(_) => {
                     info!("Wifi connected");
                     break;
@@ -216,10 +177,34 @@ impl WiFiManager<'_> {
             
         }
 
-        self.wifi.wait_netif_up().await?;
-        info!("Wifi netif up");
+        // self.wifi.wait_netif_up()?;
+        // info!("Wifi netif up");
+        // while !self.wifi.ap_netif().is_netif_up()? {
+        //     log::info!("Waiting for WiFi netif to be up...");
+        //     std::thread::sleep(std::time::Duration::from_secs(1));
+        // }
 
-        let ip_info = self.wifi.wifi().sta_netif().get_ip_info()?;
+        // while !self.wifi.sta_netif().is_netif_up()? {
+        //     log::info!("Waiting for WiFi STA netif to be up...");
+        //     std::thread::sleep(std::time::Duration::from_secs(1));
+        // }
+        // info!("WiFi netif is up");
+
+        // Wait for IP (this replaces wait_netif_up)
+        let ip_info;
+        loop {
+            if let Ok(info) = self.wifi.sta_netif().get_ip_info() {
+                if info.ip != Ipv4Addr::UNSPECIFIED {
+                    ip_info = info;
+                    break;
+                }
+            }
+
+            log::info!("Waiting for IP...");
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+
+        // let ip_info = self.wifi.sta_netif().get_ip_info()?;
 
         println!("Wifi DHCP info: {:?}", ip_info);
         
@@ -227,71 +212,4 @@ impl WiFiManager<'_> {
 
         Ok(ip_info.ip)
     }
-
-    // pub fn connect(&self) -> Result<AsyncWifi<EspWifi<'static>>> {
-    //     wifi(self.modem, self.sysloop.clone(), self.nvs.clone(), self.timer_service.clone())
-    // }
 }
-
-// fn dns_info_from_ipv4(ip: Ipv4Addr) -> esp_netif_dns_info_t {
-//     let addr = u32::from_be_bytes(ip.octets());
-
-//     esp_netif_dns_info_t {
-//         ip: esp_idf_sys::esp_ip_addr_t {
-//             type_: esp_idf_sys::esp_ip_addr_type_t::ESP_IPADDR_TYPE_V4,
-//             u_addr: esp_idf_sys::esp_ip_addr__bindgen_ty_1 {
-//                 ip4: esp_idf_sys::esp_ip4_addr_t { addr },
-//             },
-//         },
-//     }
-// }
-
-// pub fn wifi<'a>(
-//     modem: impl WifiModemPeripheral + 'static,
-//     sysloop: EspSystemEventLoop,
-//     nvs: Option<EspNvsPartition<NvsDefault>>,
-//     timer_service: EspTimerService<Task>,
-// ) -> Result<AsyncWifi<EspWifi<'static>>> {
-//     use futures::executor::block_on;
-
-//     let mut wifi = AsyncWifi::wrap(
-//         EspWifi::new(modem, sysloop.clone(), nvs)?,
-//         sysloop,
-//         timer_service.clone(),
-//     )?;
-
-//     block_on(connect_wifi(&mut wifi))?;
-
-//     let ip_info = wifi.wifi().sta_netif().get_ip_info()?;
-
-//     println!("Wifi DHCP info: {:?}", ip_info);
-    
-//     EspPing::default().ping(ip_info.subnet.gateway, &esp_idf_svc::ping::Configuration::default())?;
-//     Ok(wifi)
-
-// }
-
-// async fn connect_wifi(wifi: &mut AsyncWifi<EspWifi<'static>>) -> anyhow::Result<()> {
-//     let wifi_configuration: embedded_svc::wifi::Configuration = embedded_svc::wifi::Configuration::Client(ClientConfiguration {
-//         ssid: heapless::String::<32>::try_from(SSID).unwrap(),
-//         bssid: None,
-//         auth_method: embedded_svc::wifi::AuthMethod::WPA2Personal,
-//         password: heapless::String::<64>::try_from(PASS).unwrap(),
-//         channel: None,
-//         scan_method: esp_idf_svc::wifi::ScanMethod::FastScan,
-//         pmf_cfg: esp_idf_svc::wifi::PmfConfiguration::NotCapable,
-//     });
-
-//     wifi.set_configuration(&wifi_configuration)?;
-
-//     wifi.start().await?;
-//     info!("Wifi started");
-
-//     wifi.connect().await?;
-//     info!("Wifi connected");
-
-//     wifi.wait_netif_up().await?;
-//     info!("Wifi netif up");
-
-//     Ok(())
-// }

@@ -114,8 +114,8 @@ impl SparkoCyd {
 
         list_nvs_keys();
 
-        let mut wifi_manager = //wifi::wifi(peripherals.modem, sys_loop,Some(nvs_partition.clone()),timer_service)?;
-            WiFiManager::new(peripherals.modem, sys_loop, nvs_partition.clone(),timer_service)?;
+        let wifi_manager = //wifi::wifi(peripherals.modem, sys_loop,Some(nvs_partition.clone()),timer_service)?;
+            WiFiManager::new(peripherals.modem, sys_loop, nvs_partition.clone())?;
 
         // let led_red_pin = PinDriver::output(peripherals.pins.gpio4)?;
         // let led_green_pin = PinDriver::output(peripherals.pins.gpio16)?;
@@ -151,8 +151,8 @@ impl SparkoCyd {
             log::info!("Loaded config");
 
             // start wifi
-            futures::executor::block_on(
-                self.wifi_manager.start_client(&self.config_manager))?;
+
+            self.wifi_manager.start_client(&self.config_manager)?;
             info!("Wifi started");
 
             let _sntp = EspSntp::new_default()?;
@@ -195,7 +195,7 @@ impl SparkoCyd {
 
         self.server_manager.init_ap_pages()?;
 
-        let server_addr = futures::executor::block_on(self.wifi_manager.start_access_point())?;
+        let server_addr = self.wifi_manager.start_access_point()?;
 
         thread::spawn(move || Self::captive_dns_server(server_addr));
         
