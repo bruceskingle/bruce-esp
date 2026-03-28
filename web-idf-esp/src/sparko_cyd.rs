@@ -155,17 +155,46 @@ impl SparkoCyd {
             self.wifi_manager.start_client(&self.config_manager)?;
             info!("Wifi started");
 
-            let _sntp = EspSntp::new_default()?;
+            let sntp = EspSntp::new_default()?;
             
             info!("SNTP started, waiting for time sync...");
-            std::thread::sleep(std::time::Duration::from_secs(2));
+
+            loop {
+                if let SyncStatus::Completed = sntp.get_sync_status() {
+                    break
+                }
+                info!("still waiting for time sync...");
+                std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+
+            // std::thread::sleep(std::time::Duration::from_secs(2));
  
             let now = SystemTime::now();
             let datetime: DateTime<Local> = now.into();
             info!("Time synced: {}", datetime.format("%Y-%m-%d %H:%M:%S"));
 
             self.led_manager.set_color(0, 64, 0)?;
-            return Ok(());
+
+            loop {
+                    log::info!("Top of loop");
+
+                    let now = SystemTime::now();
+                    let datetime: DateTime<Local> = now.into();
+                    info!("Time synced: {}", datetime.format("%Y-%m-%d %H:%M:%S"));
+
+            
+                    let heap_free = unsafe { esp_get_free_heap_size() };
+                    let heap_min = unsafe { esp_get_minimum_free_heap_size() };
+                    log::info!("heap free={} min={}", heap_free, heap_min);
+                    
+                    // TODO: force a reset if we run low on heap
+
+                    std::thread::sleep(std::time::Duration::from_secs(10));
+                }
+
+
+
+            // return Ok(());
 
             // server_manager.fn_handler("/", esp_idf_svc::http::Method::Get, move |req|  -> anyhow::Result<()> {
             //         let mut response = req.into_ok_response()?;

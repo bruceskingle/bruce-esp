@@ -496,10 +496,83 @@ impl ConfigManager {
             
             resp.write(format!(r#"<button type="submit">Save</button>
                         </form>
+                        <form method="POST" action="/command">
+                        <label for="command">Command</label>
+                            <select name="command" id="command">
+                                <option value="restart">Restart</option>
+                                <option value="factory_reset">Factory Reset</option>
+                            </select>
+                            <button type="submit">Execute</button>
+                        </form>
                     </div>
                 </body>
                 </html>
                 "#).as_bytes())?;
+            Ok(())
+        })?;
+
+        let config_manager_clone = config_manager.clone();
+
+        server_manager.fn_handler("/command", Method::Post, move |mut req| {
+            info!("Received {:?} request for {}", req.method(), req.uri());
+            
+
+            let mut body = Vec::new();
+            let mut buf = [0u8; 256];
+
+            loop {
+                let read = req.read(&mut buf)?;
+                if read == 0 {
+                    break;
+                }
+                body.extend_from_slice(&buf[..read]);
+            }
+
+            let form = form_urlencoded::parse(&body)
+                .into_owned()
+                .collect::<IndexMap<String, String>>();
+
+            let command =form.get("command");
+            match command.map(|s| s.as_str()) {
+                Some("restart") => {
+                    info!("Restart command received, restarting...");
+                    let mut resp = req.into_ok_response()?;
+                    resp.write(b"restarting...")?;
+
+                    std::thread::spawn(|| {
+                        std::thread::sleep(std::time::Duration::from_secs(2));
+                        unsafe { esp_idf_sys::esp_restart(); }
+                    });
+                },
+                Some("factory_reset") => {
+                    info!("Factory reset command received, erasing config and restarting...");
+                    if let Err(e) = config_manager_clone.erase_config() {
+                        log::error!("Failed to erase config: {}", e);
+                        let mut resp = req.into_ok_response()?;
+                        resp.write(b"Failed to erase config")?;
+                    }
+                    else {
+                        let mut resp = req.into_ok_response()?;
+                        resp.write(b"Config erased. Restarting...")?;
+                    
+                        std::thread::spawn(|| {
+                            std::thread::sleep(std::time::Duration::from_secs(2));
+                            unsafe { esp_idf_sys::esp_restart(); }
+                        });
+                    }
+                },
+                Some(cmd) => {
+                    log::warn!("Unknown command received: {}", cmd);
+                        let mut resp = req.into_ok_response()?;
+                        resp.write(format!("Unknown command received: {}", cmd).as_bytes())?;
+                },
+                None => {
+                    log::warn!("No command received in form");
+                        let mut resp = req.into_ok_response()?;
+                        resp.write(b"No command received in form")?;
+                }
+            }
+
             Ok(())
         })?;
 
@@ -605,6 +678,15 @@ impl ConfigManager {
             Ok(())
         })?;
 
+        Ok(())
+    }
+
+    pub fn erase_config(&self) -> anyhow::Result<()> {
+        info!("Erasing config");
+        if let Some(core_feature_mutex) = self.features.get(CORE_FEATURE_NAME) {
+            let core_feature = core_feature_mutex.lock().unwrap();
+            core_feature.nvs_namespace.erase_all()?;
+        }
         Ok(())
     }
 

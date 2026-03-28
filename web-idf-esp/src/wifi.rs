@@ -8,6 +8,7 @@ use esp_idf_svc::wifi::Configuration;
 use esp_idf_svc::wifi::EspWifi;
 use esp_idf_svc::wifi::ScanMethod;
 use esp_idf_svc::wifi::ScanSortMethod;
+use esp_idf_svc::wifi::WifiEvent;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 use log::info;
@@ -25,6 +26,7 @@ use crate::config::ConfigManager;
 
 pub struct WiFiManager<'a> {
     wifi: EspWifi<'a>,
+    sys_loop: EspSystemEventLoop,
 }
 
 impl WiFiManager<'_> {
@@ -37,6 +39,7 @@ impl WiFiManager<'_> {
 
         Ok(Self {
             wifi: esp_wifi,
+            sys_loop,
         })
     }
 
@@ -177,18 +180,19 @@ impl WiFiManager<'_> {
             
         }
 
-        // self.wifi.wait_netif_up()?;
-        // info!("Wifi netif up");
-        // while !self.wifi.ap_netif().is_netif_up()? {
-        //     log::info!("Waiting for WiFi netif to be up...");
-        //     std::thread::sleep(std::time::Duration::from_secs(1));
-        // }
+        self.sys_loop.subscribe::<WifiEvent, _>(move |event: WifiEvent| {
+            if let WifiEvent::StaDisconnected(_) = event {
+                panic!("WiFi disconnected");
 
-        // while !self.wifi.sta_netif().is_netif_up()? {
-        //     log::info!("Waiting for WiFi STA netif to be up...");
-        //     std::thread::sleep(std::time::Duration::from_secs(1));
-        // }
-        // info!("WiFi netif is up");
+                // // Drop server so it gets recreated
+                // *server_clone.lock().unwrap() = None;
+
+                // // Trigger reconnect
+                // if let Ok(mut wifi) = wifi_clone.lock() {
+                //     let _ = wifi.connect();
+                // }
+            }
+        })?;
 
         // Wait for IP (this replaces wait_netif_up)
         let ip_info;

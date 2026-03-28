@@ -92,54 +92,54 @@ fn run() -> anyhow::Result<()> {
     let mut sparko_cyd = SparkoCyd::new(features)?;
     
     log::info!("Trace 2");
-    sparko_cyd.start()?;
+    sparko_cyd.start()
 
 
-    log::info!("Trace 3");
-    let current_dns = resolve_local_dns()?;
-    info!("Current DNS resolution for home.skingle.org: {}", current_dns);
+    // log::info!("Trace 3");
+    // let current_dns = resolve_local_dns()?;
+    // info!("Current DNS resolution for home.skingle.org: {}", current_dns);
 
-    let addr = Arc::new(Mutex::new(current_dns));
+    // let addr = Arc::new(Mutex::new(current_dns));
 
-    // let handler_addr = addr.clone();
+    // // let handler_addr = addr.clone();
 
-    let mut cnt = 0;
+    // let mut cnt = 0;
 
-    let mut r = 64;
-    let mut g = 0;
-    let mut b = 0;
-    loop {
-        log::info!("Top of loop");
+    // let mut r = 64;
+    // let mut g = 0;
+    // let mut b = 0;
+    // loop {
+    //     log::info!("Top of loop");
 
-        // sparko_cyd.led_manager.set_color(r,g,b)?;
+    //     // sparko_cyd.led_manager.set_color(r,g,b)?;
 
-        // let c = r;
-        // r = b;
-        // b = g;
-        // g = c;
+    //     // let c = r;
+    //     // r = b;
+    //     // b = g;
+    //     // g = c;
 
-        if cnt < 3 {
-            match get_public_ip_address() {
-                Ok(public_ip) => {
-                    cnt = cnt + 1;
-                    if public_ip != *addr.clone().lock().unwrap() {
-                        log::info!("Public IP changed: {} -> {}", *addr.lock().unwrap(), public_ip);
-                        // *addr.lock()? = public_ip;
-                    } else {
-                        log::info!("Public IP unchanged: {}", public_ip);
-                    }
-                },
-                Err(e) => {
-                    log::error!("Failed to get public IP address: {}", e);
-                }
-            }
-        }
+    //     if cnt < 3 {
+    //         match get_public_ip_address() {
+    //             Ok(public_ip) => {
+    //                 cnt = cnt + 1;
+    //                 if public_ip != *addr.clone().lock().unwrap() {
+    //                     log::info!("Public IP changed: {} -> {}", *addr.lock().unwrap(), public_ip);
+    //                     // *addr.lock()? = public_ip;
+    //                 } else {
+    //                     log::info!("Public IP unchanged: {}", public_ip);
+    //                 }
+    //             },
+    //             Err(e) => {
+    //                 log::error!("Failed to get public IP address: {}", e);
+    //             }
+    //         }
+    //     }
 
         
 
-        // let mut led = led.lock()?;
-        // led.toggle()?;
-        std::thread::sleep(std::time::Duration::from_secs(10));
-    }
+    //     // let mut led = led.lock()?;
+    //     // led.toggle()?;
+    //     std::thread::sleep(std::time::Duration::from_secs(10));
+    // }
 
 }
