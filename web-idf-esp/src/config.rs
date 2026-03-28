@@ -387,10 +387,16 @@ use crate::http::HttpServerManager;
 pub struct ConfigManager {
     pub features: IndexMap<String, Mutex<FeatureConfig>>,
     feature_namespace: EspNvs<NvsDefault>,
+    pub failure_reason: Arc<Mutex<Option<String>>>,
+    ap_mode: Arc<Mutex<bool>>,
 }
 
 impl ConfigManager {
-    pub fn new(nvs_partition: EspNvsPartition<NvsDefault>, p_features: &Vec::<Box<dyn Feature>>) -> anyhow::Result<Arc<ConfigManager>> {
+    pub fn new(nvs_partition: EspNvsPartition<NvsDefault>, 
+        p_features: &Vec::<Box<dyn Feature>>, 
+        failure_reason: Arc<Mutex<Option<String>>>, 
+        ap_mode: Arc<Mutex<bool>>) -> anyhow::Result<Arc<ConfigManager>> {
+
         let mut features: IndexMap<String, Mutex<FeatureConfig>> = IndexMap::new();
         let feature_namespace = EspNvs::new(nvs_partition.clone(), FEATURE_NAMESPACE_NAME, true)?;
 
@@ -426,6 +432,8 @@ impl ConfigManager {
             // config_impl: Mutex::new(ConfigManagerImpl::new(nvs_partition, features)?),
             features,
             feature_namespace,
+            failure_reason,
+            ap_mode,
         }))
     }
 
@@ -449,6 +457,12 @@ impl ConfigManager {
         true
     }
 
+    pub fn is_online(&self) -> bool {
+        let ap_mode = *self.ap_mode.lock().unwrap();
+        info!("is_ap_mode: {}", ap_mode);
+        !ap_mode
+    }
+
     pub fn is_core_config_valid(&self) -> bool {
         if let Some(core_feature_mutex) = self.features.get(CORE_FEATURE_NAME) {
             let core_feature = core_feature_mutex.lock().unwrap();
@@ -457,14 +471,8 @@ impl ConfigManager {
         false
     }
 
-    pub fn create_pages(config_manager: &Arc<Self>, server_manager: &mut HttpServerManager<'_>) -> anyhow::Result<()> {
-        let config_manager_clone = config_manager.clone();
+    fn show_config_page(config_manager_clone: &Arc<ConfigManager>, req: esp_idf_svc::http::server::Request<&mut EspHttpConnection<'_>>) -> anyhow::Result<()> {
 
-        server_manager.fn_handler("/config", Method::Get, move |req| {
-
-            // info!("Received request for / from {}", req.connection().remote_addr());
-
-            info!("Received {:?} request for {}", req.method(), req.uri());
 
             let mut resp = req.into_ok_response()?;
             resp.write(r#"
@@ -485,10 +493,23 @@ impl ConfigManager {
                     </style>
                 </head>
                 <body>
-                    <div class="page">
+                    <div class="page">"#.as_bytes())?;
+
+            if let Some(reason) = config_manager_clone.failure_reason.lock().unwrap().as_ref() {
+                info!("Failure reason present, showing error message on config page: {}", reason);
+                resp.write(format!(r#"
+                    <div style="background: #ffdddd; border: 1px solid #ff5c5c; padding: 10px; margin-bottom: 18px; border-radius: 8px;">
+                        <strong>Error:</strong> {reason}
+                    </div>
+                "#).as_bytes())?;
+            }
+            else {
+                info!("No failure reason, not showing error message on config page");
+            }
+            resp.write(r#"
                         <h1>ESP32 Setup</h1>
                         <form method="POST" action="/update_config">"#.as_bytes())?;
-            for (feature_name, feature_config_mutex) in &config_manager_clone.features {
+            for (_feature_name, feature_config_mutex) in &config_manager_clone.features {
                 let feature_config = feature_config_mutex.lock().unwrap();
                 feature_config.create_config_page(&mut resp)?;
             }
@@ -509,6 +530,18 @@ impl ConfigManager {
                 </html>
                 "#).as_bytes())?;
             Ok(())
+    }
+
+    pub fn create_pages(config_manager: &Arc<Self>, server_manager: &mut HttpServerManager<'_>) -> anyhow::Result<()> {
+        let config_manager_clone = config_manager.clone();
+
+        server_manager.fn_handler("/config", Method::Get, move |req| {
+
+            // info!("Received request for / from {}", req.connection().remote_addr());
+
+            info!("Received {:?} request for {}", req.method(), req.uri());
+
+            Self::show_config_page(&config_manager_clone, req)
         })?;
 
         let config_manager_clone = config_manager.clone();
@@ -602,21 +635,23 @@ impl ConfigManager {
 
             config_manager_clone.handle_config_form(&form)?;
 
-            let mut resp = req.into_ok_response()?;
-            resp.write(b"Saved!. Rebooting...(NOT)")?;
+            Self::show_config_page(&config_manager_clone, req)
 
-            // std::thread::spawn(|| {
-            //     std::thread::sleep(std::time::Duration::from_secs(2));
-            //     unsafe { esp_idf_sys::esp_restart(); }
-            // });
+            // let mut resp = req.into_ok_response()?;
+            // resp.write(b"Saved!. Rebooting...(NOT)")?;
 
-            Ok(())
+            // // std::thread::spawn(|| {
+            // //     std::thread::sleep(std::time::Duration::from_secs(2));
+            // //     unsafe { esp_idf_sys::esp_restart(); }
+            // // });
+
+            // Ok(())
         })?;
 
         let config_manager_clone = config_manager.clone();
         server_manager.fn_handler("/generate_204", Method::Get, move |req| {
 
-            let ok = config_manager_clone.is_core_config_valid();
+            let ok = config_manager_clone.is_online();
 
             // info!("Received request for /hotspot-detect.html from {}", req.connection().remote_addr());
 
@@ -636,7 +671,7 @@ impl ConfigManager {
         let config_manager_clone = config_manager.clone();
         server_manager.fn_handler("/hotspot-detect.html", Method::Get, move |req| {
 
-            let ok = config_manager_clone.is_core_config_valid();
+            let ok = config_manager_clone.is_online();
 
             // info!("Received request for /hotspot-detect.html from {}", req.connection().remote_addr());
 
@@ -662,7 +697,7 @@ impl ConfigManager {
         let config_manager_clone = config_manager.clone();
         server_manager.fn_handler("/connecttest.txt", Method::Get, move |req| {
 
-            let ok = config_manager_clone.is_core_config_valid();
+            let ok = config_manager_clone.is_online();
 
             // info!("Received request for /hotspot-detect.html from {}", req.connection().remote_addr());
 

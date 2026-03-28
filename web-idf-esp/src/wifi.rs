@@ -2,7 +2,6 @@
 use embedded_svc::wifi::ClientConfiguration;
 use esp_idf_hal::modem::WifiModemPeripheral;
 use esp_idf_svc::wifi::AccessPointConfiguration;
-use esp_idf_svc::wifi::AsyncWifi;
 use esp_idf_svc::wifi::AuthMethod;
 use esp_idf_svc::wifi::Configuration;
 use esp_idf_svc::wifi::EspWifi;
@@ -11,6 +10,7 @@ use esp_idf_svc::wifi::ScanSortMethod;
 use esp_idf_svc::wifi::WifiEvent;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
+use std::sync::Mutex;
 use log::info;
 use esp_idf_svc::handle::RawHandle;
 use esp_idf_svc::timer::{EspTimerService, Task};
@@ -27,6 +27,8 @@ use crate::config::ConfigManager;
 pub struct WiFiManager<'a> {
     wifi: EspWifi<'a>,
     sys_loop: EspSystemEventLoop,
+    wifi_sub: Arc<Mutex<Option<esp_idf_svc::eventloop::EspSubscription<'a, esp_idf_svc::eventloop::System>>>>,
+    failure_reason: Arc<Mutex<Option<String>>>,
 }
 
 impl WiFiManager<'_> {
@@ -34,12 +36,15 @@ impl WiFiManager<'_> {
         modem: impl WifiModemPeripheral + 'static,
         sys_loop: EspSystemEventLoop,
         nvs: EspNvsPartition<NvsDefault>,
+        failure_reason: Arc<Mutex<Option<String>>>,
     ) -> anyhow::Result<Self> {
         let esp_wifi = EspWifi::new(modem, sys_loop.clone(), Some(nvs))?;
 
         Ok(Self {
             wifi: esp_wifi,
             sys_loop,
+            wifi_sub: Arc::new(Mutex::new(None)),
+            failure_reason,
         })
     }
 
@@ -150,17 +155,85 @@ impl WiFiManager<'_> {
             password: heapless::String::<64>::try_from(config_manager.get_valid_core_config(crate::config::WIFI_PASSWORD)?.as_str()).unwrap(),
             channel: None,
             scan_method: ScanMethod::CompleteScan(ScanSortMethod::Security),
-            pmf_cfg: esp_idf_svc::wifi::PmfConfiguration::NotCapable,
+            pmf_cfg: esp_idf_svc::wifi::PmfConfiguration::Capable{ required: false },
         });
 
 
         self.wifi.set_configuration(&wifi_configuration)?;
 
+
+        let failure_reason_clone = self.failure_reason.clone();
+
+        let wifi_sub: esp_idf_svc::eventloop::EspSubscription<'_, esp_idf_svc::eventloop::System> = self.sys_loop.subscribe::<WifiEvent, _>(move |event: WifiEvent| {
+            match event {
+                WifiEvent::Ready => info!("WiFi is Ready"),
+                WifiEvent::ScanDone(sta_scan_done_ref) => info!("WiFi Scan Done: {:?} networks found", sta_scan_done_ref),
+                WifiEvent::StaStarted => info!("WiFi Station Started"),
+                WifiEvent::StaStopped => info!("WiFi Station Stopped"),
+                WifiEvent::StaConnected(sta_connected_ref) => info!("WiFi Station Connected {:?}", sta_connected_ref),
+                WifiEvent::StaDisconnected(sta_disconnected_ref) => {
+                    info!("WiFi Station Disconnected {:?}", sta_disconnected_ref);
+                    match sta_disconnected_ref.reason() as u32{
+                        esp_idf_sys::wifi_err_reason_t_WIFI_REASON_AUTH_FAIL => {
+                            info!("WiFi Station Authentication Failed");
+                            failure_reason_clone.lock().unwrap().replace("WiFi authentication failed. Please check your password.".to_string());
+                        },
+                        esp_idf_sys::wifi_err_reason_t_WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT => {
+                            info!("WiFi Station 4-Way Handshake Timeout");
+                            failure_reason_clone.lock().unwrap().replace("WiFi 4-way handshake timeout. Please check your password.".to_string());
+                        },
+                        esp_idf_sys::wifi_err_reason_t_WIFI_REASON_HANDSHAKE_TIMEOUT => {
+                            info!("WiFi Station Handshake Timeout");
+                            failure_reason_clone.lock().unwrap().replace("WiFi handshake timeout. Please check your password".to_string());
+                        },
+                        esp_idf_sys::wifi_err_reason_t_WIFI_REASON_NO_AP_FOUND => {
+                            info!("WiFi Station No AP Found");
+                            failure_reason_clone.lock().unwrap().replace("WiFi no access point found. Please check your network settings and try again.".to_string());
+                        },
+                        _ => {}
+                    }
+                },
+                WifiEvent::StaAuthmodeChanged => info!("WiFi Station Auth Mode Changed"),
+                WifiEvent::StaBssRssiLow => info!("WiFi Station Bss Rssi Low"),
+                WifiEvent::StaBeaconTimeout => info!("WiFi Station Beacon Timeout"),
+                WifiEvent::StaWpsSuccess(wps_credentials_refs) => info!("WiFi Station Wps Success {:?}", wps_credentials_refs),
+                WifiEvent::StaWpsFailed => info!("WiFi Station Wps Failed"),
+                WifiEvent::StaWpsTimeout => info!("WiFi Station Wps Timeout"),
+                WifiEvent::StaWpsPin(_) => info!("WiFi Station Wps Pin"),
+                WifiEvent::StaWpsPbcOverlap => info!("WiFi Station Wps Pbc Overlap"),
+                WifiEvent::ApStarted => info!("WiFi Access Point Started"),
+                WifiEvent::ApStopped => info!("WiFi Access Point Stopped"),
+                WifiEvent::ApStaConnected(ap_sta_connected_ref) => info!("WiFi Access Point Station Connected {:?}", ap_sta_connected_ref),
+                WifiEvent::ApStaDisconnected(ap_sta_disconnected_ref) => info!("WiFi Access Point Station Disconnected {:?})", ap_sta_disconnected_ref),
+                WifiEvent::ApProbeRequestReceived => info!("WiFi Access Point Probe Request Received"),
+                WifiEvent::FtmReport => info!("WiFi Ftm Report"),
+                WifiEvent::ActionTxStatus => info!("WiFi Action Tx Status"),
+                WifiEvent::RocDone => info!("WiFi Roc Done"),
+                WifiEvent::HomeChannelChange(home_channel_change) => info!("WiFi Home Channel Change {:?}", home_channel_change),
+            }
+
+            // if let WifiEvent::StaDisconnected(_) = event {
+            //     panic!("WiFi disconnected");
+
+            //     // // Drop server so it gets recreated
+            //     // *server_clone.lock().unwrap() = None;
+
+            //     // // Trigger reconnect
+            //     // if let Ok(mut wifi) = wifi_clone.lock() {
+            //     //     let _ = wifi.connect();
+            //     // }
+            // }
+        })?;
+
+        *self.wifi_sub.lock().unwrap() = Some(wifi_sub);
+
+        info!("WiFi event subscription set up, starting WiFi...");
+
         self.wifi.start()?;
         info!("Wifi started");
 
         let mut retry_cnt = 4;
-        while retry_cnt > 0 {
+        while self.failure_reason.lock().unwrap().is_none() && retry_cnt > 0 {
             match self.wifi.connect() {
                 Ok(_) => {
                     info!("Wifi connected");
@@ -180,23 +253,15 @@ impl WiFiManager<'_> {
             
         }
 
-        self.sys_loop.subscribe::<WifiEvent, _>(move |event: WifiEvent| {
-            if let WifiEvent::StaDisconnected(_) = event {
-                panic!("WiFi disconnected");
-
-                // // Drop server so it gets recreated
-                // *server_clone.lock().unwrap() = None;
-
-                // // Trigger reconnect
-                // if let Ok(mut wifi) = wifi_clone.lock() {
-                //     let _ = wifi.connect();
-                // }
-            }
-        })?;
-
         // Wait for IP (this replaces wait_netif_up)
         let ip_info;
+        // while self.failure_reason.lock().unwrap().is_none() {
         loop {
+            if let Some(reason) = self.failure_reason.lock().unwrap().clone() {
+                log::error!("WiFi connection failed: {}", reason);
+                return Err(anyhow::anyhow!(reason));
+            }
+
             if let Ok(info) = self.wifi.sta_netif().get_ip_info() {
                 if info.ip != Ipv4Addr::UNSPECIFIED {
                     ip_info = info;

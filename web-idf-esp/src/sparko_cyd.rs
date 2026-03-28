@@ -66,6 +66,7 @@ pub struct SparkoCyd {
     pub config_manager: Arc<ConfigManager>,
     pub server_manager: HttpServerManager<'static>,
     features: Vec::<Box<dyn Feature>>,
+    ap_mode: Arc<Mutex<bool>>,
 }
 
 
@@ -94,7 +95,8 @@ impl SparkoCyd {
         // }
 
 
-
+        let failure_reason: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let ap_mode = Arc::new(Mutex::new(false));
 
         let peripherals = Peripherals::take()?;
 
@@ -115,7 +117,7 @@ impl SparkoCyd {
         list_nvs_keys();
 
         let wifi_manager = //wifi::wifi(peripherals.modem, sys_loop,Some(nvs_partition.clone()),timer_service)?;
-            WiFiManager::new(peripherals.modem, sys_loop, nvs_partition.clone())?;
+            WiFiManager::new(peripherals.modem, sys_loop, nvs_partition.clone(), failure_reason.clone())?;
 
         // let led_red_pin = PinDriver::output(peripherals.pins.gpio4)?;
         // let led_green_pin = PinDriver::output(peripherals.pins.gpio16)?;
@@ -130,7 +132,7 @@ impl SparkoCyd {
         // let led_channel_blue = Arc::new(Mutex::new(LedcDriver::new(peripherals.ledc.channel2, &led_timer_driver, peripherals.pins.gpio17)?));
         // let led = Arc::new(Mutex::new(led_pin));
 
-        let config_manager = ConfigManager::new(nvs_partition, &features)?;
+        let config_manager = ConfigManager::new(nvs_partition, &features, failure_reason, ap_mode.clone())?;
         let mut server_manager = HttpServerManager::new()?;
         
         ConfigManager::create_pages(&config_manager, &mut server_manager)?;
@@ -141,14 +143,12 @@ impl SparkoCyd {
             config_manager,
             server_manager,
             features,
+            ap_mode,
         })
     }
     
 
-    pub fn start(&mut self) -> anyhow::Result<()> {
-        log::info!("sparko_cyd: top of run");
-        if self.config_manager.is_core_config_valid() {
-            log::info!("Loaded config");
+    pub fn start_client(&mut self) -> anyhow::Result<()> {
 
             // start wifi
 
@@ -191,6 +191,18 @@ impl SparkoCyd {
 
                     std::thread::sleep(std::time::Duration::from_secs(10));
                 }
+    }
+    
+
+    pub fn start(&mut self) -> anyhow::Result<()> {
+        log::info!("sparko_cyd: top of run");
+        if self.config_manager.is_core_config_valid() {
+            log::info!("Loaded config");
+
+            if let Err(error) = self.start_client() {
+                log::error!("Error starting client: {}", error);
+                self.led_manager.set_color(64, 0, 0)?;
+            }
 
 
 
@@ -218,9 +230,20 @@ impl SparkoCyd {
 
             
         }
+        else {
+            self.led_manager.set_color(0, 0, 64)?;
+            info!("Invalid config, starting AP mode");
+        }
 
-        log::info!("No config found");
-        self.led_manager.set_color(0, 0, 64)?;
+        if let Some(reason) = self.config_manager.failure_reason.lock().unwrap().as_ref() {
+                info!("APMODE Failure reason present, showing error message on config page: {}", reason);
+            }
+            else {
+                info!("APMODE No failure reason, not showing error message on config page");
+            }
+
+        *self.ap_mode.lock().unwrap() = true;
+        
 
         self.server_manager.init_ap_pages()?;
 
