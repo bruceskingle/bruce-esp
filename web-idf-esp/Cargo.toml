@@ -34,6 +34,7 @@ esp-idf-sys = "0.37.2"
 url = "2.5.8"
 indexmap = "2.13.0"
 chrono = "0.4.44"
+simple-dns = "0.11.2"
 
 [build-dependencies]
 embuild = "0.33"

@@ -204,7 +204,7 @@ impl SparkoCyd {
 
         // start wifi
 
-        self.wifi_manager.start_client(&self.config_manager)?;
+        let ip_address = self.wifi_manager.start_client(&self.config_manager)?;
         info!("Wifi started");
 
         let sntp = EspSntp::new_default()?;
@@ -228,6 +228,10 @@ impl SparkoCyd {
 
         let local_time = Local::now();
         info!("Local time is: {}", local_time.format("%Y-%m-%d %H:%M:%S"));
+
+        let hostname = self.config_manager.get_valid_core_config(crate::config::MDNS_HOSTNAME)?;
+
+        crate::mdns::start_mdns(&hostname, &ip_address)?;
 
         self.led_manager.set_color(0, 64, 0)?;
         loop {

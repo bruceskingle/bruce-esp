@@ -13,6 +13,7 @@ mod http;
 mod portal;
 mod led;
 mod tz;
+mod mdns;
 pub mod dyndns2;
 
 // trait Task {
