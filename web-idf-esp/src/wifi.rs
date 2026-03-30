@@ -277,7 +277,7 @@ impl WiFiManager<'_> {
 
         println!("Wifi DHCP info: {:?}", ip_info);
         
-        EspPing::default().ping(ip_info.subnet.gateway, &esp_idf_svc::ping::Configuration::default())?;
+        // EspPing::default().ping(ip_info.subnet.gateway, &esp_idf_svc::ping::Configuration::default())?;
 
         Ok(ip_info.ip)
     }

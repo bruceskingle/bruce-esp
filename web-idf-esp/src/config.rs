@@ -4,10 +4,16 @@ use esp_idf_svc::http::server::EspHttpConnection;
 use indexmap::IndexMap;
 use log::info;
 use url::form_urlencoded;
-use crate::{Feature, HOSTNAME_LEN, PASSWORD_LEN, SSID_LEN};
+use crate::{Feature, HOSTNAME_LEN, PASSWORD_LEN, SSID_LEN, tz::{TIMEZONE_LEN, TimeZone}};
 use std::{sync::{Arc, Mutex}};
 
 use anyhow::anyhow;
+
+// pub trait ConfigSerializable: std::fmt::Debug {
+//     fn to_str(&self) -> &'static str;
+//     fn from_str(&self, s: &str) -> Option<Box<Self>>;
+//     fn iter_strs(&self) -> impl Iterator<Item = &'static str>;
+// }
 
 pub enum EnabledState {
     Enabled,
@@ -31,28 +37,29 @@ impl From<bool> for EnabledState {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum TypedValue {
     String(usize, Option<String>),
     Int32(Option<i32>),
     Int64(Option<i64>),
     Bool(bool),
+    TimeZone(TimeZone),
 }
 
 impl TypedValue {
-    pub fn is_type_compatible(&self, other: &TypedValue) -> bool {
-        match self {
-            TypedValue::String(len, _value) => {
-                if let TypedValue::String(other_len, _) = other {
-                    return len == other_len;
-                }
-                false
-            },
-            TypedValue::Int32(_) => matches!(other, TypedValue::Int32(_)),
-            TypedValue::Int64(_) => matches!(other, TypedValue::Int64(_) ),
-            TypedValue::Bool(_) => matches!(other, TypedValue::Bool(_)),
-        }
-    }
+    // pub fn is_type_compatible(&self, other: &TypedValue) -> bool {
+    //     match self {
+    //         TypedValue::String(len, _value) => {
+    //             if let TypedValue::String(other_len, _) = other {
+    //                 return len == other_len;
+    //             }
+    //             false
+    //         },
+    //         TypedValue::Int32(_) => matches!(other, TypedValue::Int32(_)),
+    //         TypedValue::Int64(_) => matches!(other, TypedValue::Int64(_) ),
+    //         TypedValue::Bool(_) => matches!(other, TypedValue::Bool(_)),
+    //     }
+    // }
 
     pub fn is_none(&self) -> bool {
         match self {
@@ -60,6 +67,7 @@ impl TypedValue {
             TypedValue::Int32(val) => val.is_none(),
             TypedValue::Int64(val) => val.is_none(),
             TypedValue::Bool(_) => false, // Bool is never None, it defaults to false
+            TypedValue::TimeZone(_) => false, // TimeZone is never None, it defaults to a specific timezone
         }
     }
     
@@ -90,7 +98,18 @@ impl TypedValue {
                     false
                 };
                 TypedValue::Bool(v)
-            },  
+            },
+            TypedValue::TimeZone(_) => {
+                if let Some(str) = nvs.get_str(name, &mut [0u8; TIMEZONE_LEN as usize]).ok().flatten() {
+                    if let Some(tz) = TimeZone::from_str(str) {
+                        TypedValue::TimeZone(tz)
+                    } else {
+                        TypedValue::TimeZone(TimeZone::Utc)
+                    }
+                } else {
+                    TypedValue::TimeZone(TimeZone::Utc)
+                }
+            },
         };
         info!("Finished reading config value {} from NVS: {:?}", name, result);
         result
@@ -102,6 +121,7 @@ impl TypedValue {
             TypedValue::Int32(Some(val)) => val.to_string(),
             TypedValue::Int64(Some(val)) => val.to_string(),
             TypedValue::Bool(val) => val.to_string(),
+            TypedValue::TimeZone(tz) => tz.to_str().to_string(),
             _ => "".to_string(),
         }
     }
@@ -112,6 +132,7 @@ impl TypedValue {
             TypedValue::Int32(val) => TypedValue::Int32(None),
             TypedValue::Int64(val) => TypedValue::Int64(None),
             TypedValue::Bool(val) => TypedValue::Bool(false),
+            TypedValue::TimeZone(_) => TypedValue::TimeZone(TimeZone::Utc),
         }
     }
     
@@ -130,6 +151,13 @@ impl TypedValue {
             TypedValue::Int32(_) => TypedValue::Int32(Some(str_val.parse::<i32>()?)),
             TypedValue::Int64(_) => TypedValue::Int64(Some(str_val.parse::<i64>()?)),
             TypedValue::Bool(_) => TypedValue::Bool(str_val.parse::<bool>()?),
+            TypedValue::TimeZone(_) => {
+                if let Some(tz) = TimeZone::from_str(str_val) {
+                    TypedValue::TimeZone(tz)
+                } else {
+                    anyhow::bail!("Invalid timezone value: {}", str_val);
+                }
+            },
         })
     }
 }
@@ -289,6 +317,19 @@ impl FeatureConfig {
                 },
                 TypedValue::Int32(_) | TypedValue::Int64(_) => "number",
                 TypedValue::Bool(_) => "checkbox",
+                TypedValue::TimeZone(current) => {
+                    info!("Config value {} is a TimeZone,", name);
+
+                    resp.write(format!(r#"
+                        <label for="{name}">{name}</label>
+                        <select id="{name}" name="{name}">"#).as_bytes())?;
+                    for tz in TimeZone::iter() {
+                        let selected_attr = if *tz == current { " selected" } else { "" };
+                        resp.write(format!(r#"<option value="{}"{}>{}</option>"#, tz.to_str(), selected_attr, tz.to_str()).as_bytes())?;
+                    }
+                    resp.write(format!(r#"</select>"#).as_bytes())?;
+                    continue;
+                },
             };
             let value = config_value.value.to_string();
             resp.write(format!(r#"
@@ -333,28 +374,39 @@ impl FeatureConfig {
                 log::info!("Config value {} is {}", name, str_val);
                 match config_value.value.from_str(str_val) {
                     Ok(new_value) => {
-                        config_value.value = new_value;
-                        // Save to NVS
-                        log::info!("Save to NVS Config value {} is {}", name, str_val);
-                        match &config_value.value {
-                            TypedValue::String(_len, Some(val)) => {
-                                info!("Saving string value for {} to NVS: {}", name, val);
-                                self.nvs_namespace.set_str(name, val)?
-                            },
-                            TypedValue::Int32(Some(val)) => {
-                                info!("Saving int32 value for {} to NVS: {}", name, val);
-                                self.nvs_namespace.set_i32(name, *val)?
-                            },
-                            TypedValue::Int64(Some(val)) => {
-                                info!("Saving int64 value for {} to NVS: {}", name, val);
-                                self.nvs_namespace.set_i64(name, *val)?
-                            },
-                            TypedValue::Bool(val) => {
-                                info!("Saving bool value for {} to NVS: {}", name, val);
-                                self.nvs_namespace.set_u8(name, if *val { 1 } else { 0 })?
-                            },
-                            _ => anyhow::bail!("Invalid config value for {}: {:?}", name, config_value.value),
-                        };
+                        if config_value.value.is_none() || new_value != config_value.value {
+                            log::info!("Config value {} changed from {:?} to {:?}", name, config_value.value, new_value);
+
+                            config_value.value = new_value;
+                            // Save to NVS
+                            log::info!("Save to NVS Config value {} is {}", name, str_val);
+                            match &config_value.value {
+                                TypedValue::String(_len, Some(val)) => {
+                                    info!("Saving string value for {} to NVS: {}", name, val);
+                                    self.nvs_namespace.set_str(name, val)?
+                                },
+                                TypedValue::Int32(Some(val)) => {
+                                    info!("Saving int32 value for {} to NVS: {}", name, val);
+                                    self.nvs_namespace.set_i32(name, *val)?
+                                },
+                                TypedValue::Int64(Some(val)) => {
+                                    info!("Saving int64 value for {} to NVS: {}", name, val);
+                                    self.nvs_namespace.set_i64(name, *val)?
+                                },
+                                TypedValue::Bool(val) => {
+                                    info!("Saving bool value for {} to NVS: {}", name, val);
+                                    self.nvs_namespace.set_u8(name, if *val { 1 } else { 0 })?
+                                },
+                                TypedValue::TimeZone(tz) => {
+                                    info!("Saving TimeZone value for {} to NVS: {}", name, tz.to_str());
+                                    self.nvs_namespace.set_str(name, tz.to_str())?
+                                },
+                                _ => anyhow::bail!("Invalid config value for {}: {:?}", name, config_value.value),
+                            };
+                        }
+                        else {
+                            log::info!("Config value {} unchanged: {:?}", name, config_value.value);
+                        }
                     }
                     Err(e) => {
                         anyhow::bail!("Failed to parse config value for {}: {}", name, e);
@@ -405,6 +457,7 @@ impl ConfigManager {
         core_config.insert(SSID.to_string(), ConfigValue { value: TypedValue::String(SSID_LEN, None), required: true })?;
         core_config.insert(WIFI_PASSWORD.to_string(), ConfigValue { value: TypedValue::String(PASSWORD_LEN, None), required: true })?;
         core_config.insert(MDNS_HOSTNAME.to_string(), ConfigValue { value: TypedValue::String(HOSTNAME_LEN, None), required: true })?;
+        core_config.insert(TIMEZONE.to_string(), ConfigValue { value: TypedValue::TimeZone(TimeZone::Utc), required: true })?;
 
         // let core_namespace = EspNvs::new(nvs_partition, "core", true)?;
         let core_feature_config = FeatureConfig::new(
@@ -435,6 +488,23 @@ impl ConfigManager {
             failure_reason,
             ap_mode,
         }))
+    }
+
+    pub fn set_system_timezone(&self) -> anyhow::Result<()> {
+        let locked_config = self.features.get(CORE_FEATURE_NAME).unwrap().lock().unwrap();
+        let opt_config = locked_config.config.map.get(TIMEZONE);
+        if let Some(config) = opt_config {
+            if let TypedValue::TimeZone(tz) = config.value {
+                tz.set_as_system_timezone();
+            }
+            else {
+                anyhow::bail!("Timezone config value has wrong type");
+            }
+        }
+        else {
+            TimeZone::Utc.set_as_system_timezone();
+        }
+        Ok(())
     }
 
     pub fn get_valid_core_config(&self, key: &str) -> anyhow::Result<String> {
@@ -482,15 +552,7 @@ impl ConfigManager {
                     <meta charset="utf-8" />
                     <meta name="viewport" content="width=device-width, initial-scale=1" />
                     <title>ESP32 Setup</title>
-                    <style>
-                        body { font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif; margin: 0; padding: 0; background: #f7f7f7; }
-                        .page { max-width: 480px; margin: 0 auto; padding: 18px; }
-                        h1 { font-size: 1.5rem; margin-bottom: 1rem; }
-                        label { display: block; margin: 12px 0 6px; font-weight: 600; }
-                        input { width: 100%; padding: 10px 10px; border: 1px solid #ccc; border-radius: 8px; box-sizing: border-box; }
-                        button { margin-top: 18px; width: 100%; padding: 12px; font-size: 1rem; border-radius: 10px; border: none; background: #007aff; color: #fff; }
-                        button:active { background: #005bb5; }
-                    </style>
+                    <link rel="stylesheet" href="/main.css">
                 </head>
                 <body>
                     <div class="page">"#.as_bytes())?;
@@ -570,7 +632,7 @@ impl ConfigManager {
                 Some("restart") => {
                     info!("Restart command received, restarting...");
                     let mut resp = req.into_ok_response()?;
-                    resp.write(b"restarting...")?;
+                    resp.write(b"<!doctype html><html><head><meta http-equiv=\"refresh\" content=\"5;url=/\" /><title>Restarting</title></head><body><p>Device restarting, redirecting to root in 5 seconds...</p><script>setTimeout(()=>{window.location.href='/';},5000);</script></body></html>")?;
 
                     std::thread::spawn(|| {
                         std::thread::sleep(std::time::Duration::from_secs(2));
@@ -582,11 +644,11 @@ impl ConfigManager {
                     if let Err(e) = config_manager_clone.erase_config() {
                         log::error!("Failed to erase config: {}", e);
                         let mut resp = req.into_ok_response()?;
-                        resp.write(b"Failed to erase config")?;
+                        resp.write(b"<!doctype html><html><head><meta http-equiv=\"refresh\" content=\"5;url=/\" /><title>Factory reset failed</title></head><body><p>Failed to erase config.</p><script>setTimeout(()=>{window.location.href='/';},5000);</script></body></html>")?;
                     }
                     else {
                         let mut resp = req.into_ok_response()?;
-                        resp.write(b"Config erased. Restarting...")?;
+                        resp.write(b"<!doctype html><html><head><meta http-equiv=\"refresh\" content=\"5;url=/\" /><title>Factory reset</title></head><body><p>Config erased. Device restarting, redirecting to root in 5 seconds...</p><script>setTimeout(()=>{window.location.href='/';},5000);</script></body></html>")?;
                     
                         std::thread::spawn(|| {
                             std::thread::sleep(std::time::Duration::from_secs(2));
@@ -755,3 +817,4 @@ const RESERVED_FEATURE_NAMES: [&str; 6] = [
 pub const SSID: &str = "ssid";
 pub const WIFI_PASSWORD: &str = "wifi_password";
 pub const MDNS_HOSTNAME: &str = "mdns_hostname";
+pub const TIMEZONE: &str = "time_zone";

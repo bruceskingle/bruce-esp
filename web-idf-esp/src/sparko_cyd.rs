@@ -2,11 +2,11 @@ use std::{backtrace::Backtrace, net::{IpAddr, UdpSocket}, sync::{Arc, Mutex}, th
 
 use esp_idf_hal::{gpio::PinDriver, ledc::LedcDriver};
 use esp_idf_svc::{eventloop::EspSystemEventLoop, hal::peripherals::Peripherals, http::{Method, client::EspHttpConnection, server::EspHttpServer}, nvs::{EspDefaultNvsPartition, EspNvs}, timer::EspTaskTimerService};
+use indexmap::IndexMap;
 use log::info;
 use std::str::FromStr;
 use esp_idf_svc::sntp::*;
-use chrono::{DateTime, Local};
-use std::time::SystemTime;
+use chrono::{Local, Utc};
 
 use crate::{Feature, config::ConfigManager, http::HttpServerManager, led::LedManager, wifi::WiFiManager};
 
@@ -60,13 +60,63 @@ fn list_nvs_keys() {
 }
 }
 
+// #[derive(Eq, Hash, PartialEq)]
+// struct Endpoint {
+//     uri: String,
+//     method: Method,
+// }
+
+// type PageHandler = Box<dyn for<'r> Fn(esp_idf_svc::http::server::Request<&mut EspHttpConnection>) -> anyhow::Result<()> + Send + 'static>;
+// pub struct Builder {
+//     features: Vec::<Box<dyn Feature>>,
+//      handlers: IndexMap<Endpoint, PageHandler>,
+// }
+
+// impl Builder {
+//     pub fn new() -> Self {
+//         Self {
+//             features: Vec::new(),
+//             handlers: IndexMap::new(),
+//         }
+//     }
+
+//     pub fn with_feature(mut self, feature: Box<dyn Feature>) -> Self {
+//         self.features.push(feature);
+//         self
+//     }
+
+//     pub fn with_handler<F>(
+//         mut self,
+//         uri: &str,
+//         method: Method,
+//         f: F,
+//     ) -> Self
+//     where
+//         F: for<'r> Fn(esp_idf_svc::http::server::Request<&mut EspHttpConnection>) -> Self,
+//     {
+//         let endpoint = Endpoint {
+//             uri: uri.to_string(),
+//             method,
+//         };
+
+//         let hndler = Box::new(f);
+//         self.handlers.insert(endpoint, Box::new(f));
+//         self
+
+//     }
+
+//     pub fn build(self) -> anyhow::Result<SparkoCyd> {
+//         SparkoCyd::new(self.features)
+//     }
+// }
+
 pub struct SparkoCyd {
     pub wifi_manager: WiFiManager<'static>,
     pub led_manager: LedManager<'static>,
     pub config_manager: Arc<ConfigManager>,
     pub server_manager: HttpServerManager<'static>,
     features: Vec::<Box<dyn Feature>>,
-    ap_mode: Arc<Mutex<bool>>,
+    pub ap_mode: Arc<Mutex<bool>>,
 }
 
 
@@ -134,6 +184,8 @@ impl SparkoCyd {
 
         let config_manager = ConfigManager::new(nvs_partition, &features, failure_reason, ap_mode.clone())?;
         let mut server_manager = HttpServerManager::new()?;
+
+        server_manager.init_common_pages()?;
         
         ConfigManager::create_pages(&config_manager, &mut server_manager)?;
 
@@ -150,48 +202,57 @@ impl SparkoCyd {
 
     pub fn start_client(&mut self) -> anyhow::Result<()> {
 
-            // start wifi
+        // start wifi
 
-            self.wifi_manager.start_client(&self.config_manager)?;
-            info!("Wifi started");
+        self.wifi_manager.start_client(&self.config_manager)?;
+        info!("Wifi started");
 
-            let sntp = EspSntp::new_default()?;
-            
-            info!("SNTP started, waiting for time sync...");
+        let sntp = EspSntp::new_default()?;
+        
+        info!("SNTP started, waiting for time sync...");
 
-            loop {
-                if let SyncStatus::Completed = sntp.get_sync_status() {
-                    break
-                }
-                info!("still waiting for time sync...");
-                std::thread::sleep(std::time::Duration::from_millis(500));
+        loop {
+            if let SyncStatus::Completed = sntp.get_sync_status() {
+                break
+            }
+            info!("still waiting for time sync...");
+            std::thread::sleep(std::time::Duration::from_millis(500));
+}
+
+        // std::thread::sleep(std::time::Duration::from_secs(2));
+
+        let datetime = Utc::now();
+        info!("Time synced: {}", datetime.format("%Y-%m-%d %H:%M:%S"));
+
+        self.config_manager.set_system_timezone()?;
+
+        let local_time = Local::now();
+        info!("Local time is: {}", local_time.format("%Y-%m-%d %H:%M:%S"));
+
+        self.led_manager.set_color(0, 64, 0)?;
+        loop {
+                log::info!("Top of loop");
+
+                let datetime = Utc::now();
+                info!("Time synced: {}", datetime.format("%Y-%m-%d %H:%M:%S"));
+
+        
+                let heap_free = unsafe { esp_get_free_heap_size() };
+                let heap_min = unsafe { esp_get_minimum_free_heap_size() };
+                log::info!("heap free={} min={}", heap_free, heap_min);
+                
+                // TODO: force a reset if we run low on heap
+
+                std::thread::sleep(std::time::Duration::from_secs(10));
+            }
+
+        Ok(())
     }
+    
 
-            // std::thread::sleep(std::time::Duration::from_secs(2));
- 
-            let now = SystemTime::now();
-            let datetime: DateTime<Local> = now.into();
-            info!("Time synced: {}", datetime.format("%Y-%m-%d %H:%M:%S"));
+    // pub fn run(&mut self) -> anyhow::Result<()> {
 
-            self.led_manager.set_color(0, 64, 0)?;
-
-            loop {
-                    log::info!("Top of loop");
-
-                    let now = SystemTime::now();
-                    let datetime: DateTime<Local> = now.into();
-                    info!("Time synced: {}", datetime.format("%Y-%m-%d %H:%M:%S"));
-
-            
-                    let heap_free = unsafe { esp_get_free_heap_size() };
-                    let heap_min = unsafe { esp_get_minimum_free_heap_size() };
-                    log::info!("heap free={} min={}", heap_free, heap_min);
-                    
-                    // TODO: force a reset if we run low on heap
-
-                    std::thread::sleep(std::time::Duration::from_secs(10));
-                }
-    }
+    // }
     
 
     pub fn start(&mut self) -> anyhow::Result<()> {
@@ -202,6 +263,10 @@ impl SparkoCyd {
             if let Err(error) = self.start_client() {
                 log::error!("Error starting client: {}", error);
                 self.led_manager.set_color(64, 0, 0)?;
+            }
+            else {
+                log::info!("Client mode started successfully");
+                return Ok(());
             }
 
 
@@ -245,7 +310,7 @@ impl SparkoCyd {
         *self.ap_mode.lock().unwrap() = true;
         
 
-        self.server_manager.init_ap_pages()?;
+        // self.server_manager.init_ap_pages()?;
 
         let server_addr = self.wifi_manager.start_access_point()?;
 

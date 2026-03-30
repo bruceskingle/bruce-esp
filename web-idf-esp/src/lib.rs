@@ -12,6 +12,7 @@ mod wifi;
 mod http;
 mod portal;
 mod led;
+mod tz;
 pub mod dyndns2;
 
 // trait Task {

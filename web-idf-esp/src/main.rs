@@ -1,5 +1,6 @@
-use std::{net::{IpAddr, UdpSocket}, sync::{Arc, Mutex}, thread};
+use std::{net::{IpAddr, UdpSocket}, sync::{Arc, Mutex}, thread, time::SystemTime};
 
+use chrono::{DateTime, Local};
 use esp_idf_hal::{gpio::PinDriver, ledc::LedcDriver};
 use esp_idf_svc::{eventloop::EspSystemEventLoop, hal::peripherals::Peripherals, http::{Method, client::EspHttpConnection, server::EspHttpServer}, nvs::{EspDefaultNvsPartition, EspNvs}, timer::EspTaskTimerService};
 use log::info;
@@ -85,14 +86,68 @@ fn main() {
 }
 
 fn run() -> anyhow::Result<()> {
+    // let mut builder = SparkoCyd::Builder::new();
+
+    // let mut sparko_cyd = builder
+    //     .with_feature(DynDns2::new())
+    //     .build()?;
+
     let mut features = Vec::<Box<dyn Feature>>::new();
     features.push(Box::new(DynDns2::new()));
 
     log::info!("Trace 1");
     let mut sparko_cyd = SparkoCyd::new(features)?;
+
+    let cloned_ap_mode = sparko_cyd.ap_mode.clone();
+    sparko_cyd.server_manager.fn_handler("/", Method::Get, move |req| {
+
+            // info!("Received request for / from {}", req.connection().remote_addr());
+
+            info!("Received {:?} request for {}", req.method(), req.uri());
+
+            if cloned_ap_mode.lock().unwrap().clone() {
+                let mut resp = req.into_response(
+                    302,
+                    Some("Found"),
+                    &[("Location", "/new-path")],
+                )?;
+            }
+            else {
+
+                let mut resp = req.into_ok_response()?;
+                resp.write(r#"
+                    <!DOCTYPE html>
+                    <html lang="en">
+                    <head>
+                        <meta charset="utf-8" />
+                        <meta name="viewport" content="width=device-width, initial-scale=1" />
+                        <title>ESP32 Home</title>
+                        <link rel="stylesheet" href="/main.css">
+                    </head>
+                    <body>
+                        <div class="page">
+                            <h1>ESP32 Home</h1>
+                            <p>Welcome to the ESP32 home page!</p>
+                            <p>Current time: "#.as_bytes())?;
+
+                let now = Local::now();
+                let time = now.format("%Y-%m-%d %H:%M:%S").to_string();
+                resp.write(time.as_bytes())?;
+                resp.write(r#"</p>
+                        </div>
+                    </body>
+                    </html>
+                    "#.as_bytes())?;
+            }
+            Ok(())
+        })?;
+
     
     log::info!("Trace 2");
     sparko_cyd.start()
+    // ?;
+    // sparko_cyd.run()
+}
 
 
     // log::info!("Trace 3");
@@ -142,4 +197,4 @@ fn run() -> anyhow::Result<()> {
     //     std::thread::sleep(std::time::Duration::from_secs(10));
     // }
 
-}
+
